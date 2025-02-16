@@ -13,6 +13,7 @@ import (
 func (s *Service) CachedHeadRoot() [32]byte {
 	s.cfg.ForkChoiceStore.RLock()
 	defer s.cfg.ForkChoiceStore.RUnlock()
+	// CachedHeadRoot returns the last cached head root
 	return s.cfg.ForkChoiceStore.CachedHeadRoot()
 }
 

@@ -37,26 +37,40 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 	defer span.End()
 	span.SetAttributes(trace.StringAttribute("validator", fmt.Sprintf("%#x", pubKey)))
 
+	// The validator waits until one of two conditions is met:
+	// - One-third of the slot time has passed.
+	// - A valid block for the slot has been received.
 	v.waitOneThirdOrValidBlock(ctx, slot)
 
+	// appends a byte to the strings.Builder to create a lock key. 
+	// This byte represents the validator's role.
 	var b strings.Builder
 	if err := b.WriteByte(byte(iface.RoleAttester)); err != nil {
 		log.WithError(err).Error("Could not write role byte for lock key")
 		tracing.AnnotateError(span, err)
 		return
 	}
+
+	// It appends the validator's public key (a byte array) to the strings.Builder
 	_, err := b.Write(pubKey[:])
 	if err != nil {
 		log.WithError(err).Error("Could not write pubkey bytes for lock key")
 		tracing.AnnotateError(span, err)
 		return
 	}
+
+	// It creates a lock using the string built by strings.Builder (which contains the validator's role and public key).
+	// The lock ensures that only one instance of the validator can perform a specific task (e.g., attesting) at a time.
 	lock := async.NewMultilock(b.String())
 	lock.Lock()
 	defer lock.Unlock()
 
+	// It converts the public key (a byte array) into a hexadecimal string for easier readability.
 	fmtKey := fmt.Sprintf("%#x", pubKey[:])
 	log := log.WithField("pubkey", fmt.Sprintf("%#x", bytesutil.Trunc(pubKey[:]))).WithField("slot", slot)
+	// Given the validator public key, this gets the validator assignment.
+	// - It fetches the validator's role and committee for the slot.
+	// - If the validator isn’t part of any committee, it skips attesting.
 	duty, err := v.duty(pubKey)
 	if err != nil {
 		log.WithError(err).Error("Could not fetch validator assignment")
@@ -71,10 +85,16 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 		return
 	}
 
+
+	
 	req := &ethpb.AttestationDataRequest{
 		Slot:           slot,
 		CommitteeIndex: duty.CommitteeIndex,
 	}
+	// This function is used by a validator to request attestation data from the beacon node. 
+	// Attestation data is the information a validator needs to create a signed attestation
+	// (a vote on a block).
+	// beacon-chain/rpc/prysm/v1alpha1/validator/attester.go
 	data, err := v.validatorClient.AttestationData(ctx, req)
 	if err != nil {
 		log.WithError(err).Error("Could not request attestation to sign at slot")
@@ -85,6 +105,8 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 		return
 	}
 
+	// Given validator's public key, this function returns the signature of an attestation data and its signing root.
+	// - The validator signs the attestation data to prove its participation.
 	sig, _, err := v.signAtt(ctx, pubKey, data, slot)
 	if err != nil {
 		log.WithError(err).Error("Could not sign attestation")
@@ -96,7 +118,11 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 	}
 
 	postElectra := slots.ToEpoch(slot) >= params.BeaconConfig().ElectraForkEpoch
-
+	// The validator creates the attestation object  in the correct format 
+	// (depending on the blockchain fork, e.g., Electra or earlier)., which includes:
+	// - The attestation data.
+	// - The validator’s signature.
+	// - The validator’s index in the committee.
 	var indexedAtt ethpb.IndexedAtt
 	if postElectra {
 		indexedAtt = &ethpb.IndexedAttestationElectra{
@@ -111,7 +137,11 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 			Signature:        sig,
 		}
 	}
-
+	
+	// domainAndSigningRoot returns the domain and signing root for an attestation.
+	// A domain is a unique identifier that ensures data (like attestations or blocks) is 
+	// only valid for a specific purpose, fork, or epoch. It prevents data from being misused 
+	// or replayed in the wrong context.
 	_, signingRoot, err := v.domainAndSigningRoot(ctx, indexedAtt.GetData())
 	if err != nil {
 		log.WithError(err).Error("Could not get domain and signing root from attestation")
@@ -123,6 +153,9 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 	}
 
 	// Send the attestation to the beacon node.
+	// SlashableAttestationCheck checks if an attestation is slashable by comparing it with the attesting
+	// history for the given public key in our complete slashing protection database defined by EIP-3076.
+	// If it is not, it updates the database.
 	if err := v.db.SlashableAttestationCheck(ctx, indexedAtt, pubKey, signingRoot, v.emitAccountMetrics, ValidatorAttestFailVec); err != nil {
 		log.WithError(err).Error("Failed attestation slashing protection check")
 		log.WithFields(
@@ -142,10 +175,15 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 			CommitteeId:   duty.CommitteeIndex,
 			Signature:     sig,
 		}
+		// ProposeAttestationElectra is a function called by an attester to vote
+		// on a block via an attestation object as defined in the Ethereum specification.
+		// - It allows a validator to vote on a block by submitting an attestation
+		// beacon-chain/rpc/prysm/v1alpha1/validator/attester.go
 		attResp, err = v.validatorClient.ProposeAttestationElectra(ctx, attestation)
 	} else {
 		var indexInCommittee uint64
 		var found bool
+		// Find the Validator’s Index in the Committee
 		for i, vID := range duty.Committee {
 			if vID == duty.ValidatorIndex {
 				indexInCommittee = uint64(i)
@@ -153,6 +191,8 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 				break
 			}
 		}
+		// If the validator is not found in the committee, it logs an error, increments 
+		// a failure metric (if enabled), and stops.
 		if !found {
 			log.Errorf("Validator ID %d not found in committee of %v", duty.ValidatorIndex, duty.Committee)
 			if v.emitAccountMetrics {
@@ -160,13 +200,17 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 			}
 			return
 		}
+		// A bitfield (a list of bits) is created to represent which validators in the committee have signed the attestation.
 		aggregationBitfield = bitfield.NewBitlist(uint64(len(duty.Committee)))
+		// The bit corresponding to the validator’s index is set to true
 		aggregationBitfield.SetBitAt(indexInCommittee, true)
 		attestation := &ethpb.Attestation{
 			Data:            data,
 			AggregationBits: aggregationBitfield,
 			Signature:       sig,
 		}
+		// Finally, you submit your attestation to the beacon node. The beacon node broadcasts
+		// it to the network, and other validators include it in the blockchain.
 		attResp, err = v.validatorClient.ProposeAttestation(ctx, attestation)
 	}
 	if err != nil {
@@ -177,7 +221,8 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 		tracing.AnnotateError(span, err)
 		return
 	}
-
+	// saveSubmittedAtt saves the submitted attestation data along with the attester's pubkey.
+	// The purpose of this is to display combined attesting logs for all keys managed by the validator client.
 	if err := v.saveSubmittedAtt(data, pubKey[:], false); err != nil {
 		log.WithError(err).Error("Could not save validator index for logging")
 		if v.emitAccountMetrics {
@@ -202,6 +247,7 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 		span.SetAttributes(trace.Int64Attribute("committeeIndex", int64(data.CommitteeIndex)))
 	}
 
+	// The function updates metrics and tracing information to track the validator’s performance.
 	if v.emitAccountMetrics {
 		ValidatorAttestSuccessVec.WithLabelValues(fmtKey).Inc()
 		ValidatorAttestedSlotsGaugeVec.WithLabelValues(fmtKey).Set(float64(slot))
@@ -249,10 +295,14 @@ func (v *validator) signAtt(ctx context.Context, pubKey [fieldparams.BLSPubkeyLe
 }
 
 func (v *validator) domainAndSigningRoot(ctx context.Context, data *ethpb.AttestationData) (*ethpb.DomainResponse, [32]byte, error) {
+	// to get the domain for the attestation. The domain is a unique identifier for the attestation
+	// A domain is a unique identifier that ensures data (like attestations or blocks) is only valid 
+	// for a specific purpose, fork, or epoch. It prevents data from being misused or replayed in the wrong context.
 	domain, err := v.domainData(ctx, data.Target.Epoch, params.BeaconConfig().DomainBeaconAttester[:])
 	if err != nil {
 		return nil, [32]byte{}, err
 	}
+	// ComputeSigningRoot computes the root of the object by calculating the hash tree root of the signing data with the given domain.
 	root, err := signing.ComputeSigningRoot(data, domain.SignatureDomain)
 	if err != nil {
 		return nil, [32]byte{}, err

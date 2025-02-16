@@ -15,12 +15,16 @@ import (
 )
 
 // nolint:gocognit
-func (c *beaconApiValidatorClient) proposeBeaconBlock(ctx context.Context, in *ethpb.GenericSignedBeaconBlock) (*ethpb.ProposeResponse, error) {
+func (c *beaconApiValidatorClient) 	proposeBeaconBlock(ctx context.Context, in *ethpb.GenericSignedBeaconBlock) (*ethpb.ProposeResponse, error) {
+	// consensusVersion: The version of the block (e.g., "phase0", "altair").
 	var consensusVersion string
+	// beaconBlockRoot: The root hash of the block (a unique identifier).
 	var beaconBlockRoot [32]byte
 
 	var err error
+	// marshalledSignedBeaconBlockJson: The serialized block in JSON format.
 	var marshalledSignedBeaconBlockJson []byte
+	// blinded: A flag to indicate if the block is a blinded block (a block without full transaction data).
 	blinded := false
 
 	switch blockType := in.Block.(type) {
@@ -30,7 +34,7 @@ func (c *beaconApiValidatorClient) proposeBeaconBlock(ctx context.Context, in *e
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to compute block root for phase0 beacon block")
 		}
-
+		// Marshals the block into JSON format using marshallBeaconBlockPhase0()
 		marshalledSignedBeaconBlockJson, err = marshallBeaconBlockPhase0(blockType.Phase0)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to marshall phase0 beacon block")
@@ -58,6 +62,8 @@ func (c *beaconApiValidatorClient) proposeBeaconBlock(ctx context.Context, in *e
 			return nil, errors.Wrap(err, "failed to marshall bellatrix beacon block")
 		}
 	case *ethpb.GenericSignedBeaconBlock_BlindedBellatrix:
+		// A blinded version of a block in blockchain refers to a version of the block
+		// where certain sensitive data is hidden (blinded) for security or decentralization reasons
 		blinded = true
 		consensusVersion = "bellatrix"
 		beaconBlockRoot, err = blockType.BlindedBellatrix.Block.HashTreeRoot()

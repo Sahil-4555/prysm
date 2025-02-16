@@ -301,70 +301,109 @@ func ProcessBlockForStateRoot(
 ) (state.BeaconState, error) {
 	ctx, span := trace.StartSpan(ctx, "core.state.ProcessBlockForStateRoot")
 	defer span.End()
+
+	// checks if any composite field of input signed beacon block is nil.
 	if err := blocks.BeaconBlockIsNil(signed); err != nil {
 		return nil, err
 	}
 
+	// Retrieving the block body to access its operations and data.
 	blk := signed.Block()
 	body := blk.Body()
+
+	// Computing the hash tree root of the block body to ensure data integrity.
 	bodyRoot, err := body.HashTreeRoot()
 	if err != nil {
 		return nil, errors.Wrap(err, "could not hash tree root beacon block body")
 	}
+	
+	// Extracting the parent root from the block header to validate the block's linkage to its parent.
 	parentRoot := blk.ParentRoot()
+
+	// process_block_header(state, block)
+	// validates the block header but skips specific checks related to the proposer signature
 	state, err = b.ProcessBlockHeaderNoVerify(ctx, state, blk.Slot(), blk.ProposerIndex(), parentRoot[:], bodyRoot[:])
 	if err != nil {
 		tracing.AnnotateError(span, err)
 		return nil, errors.Wrap(err, "could not process block header")
 	}
 
+	// if is_execution_enabled(state, block.body):
+    // 	 process_execution_payload(state, block.body.execution_payload, EXECUTION_ENGINE)
+	// Checks if the chain is in a state where execution data should be processed, 
+	// which happens after the merge (post-Phase 0).
 	enabled, err := b.IsExecutionEnabled(state, blk.Body())
 	if err != nil {
 		return nil, errors.Wrap(err, "could not check if execution is enabled")
 	}
 	if enabled {
+		// Extract execution data from the block body.
 		executionData, err := blk.Body().Execution()
 		if err != nil {
 			return nil, err
 		}
+		// If the beacon state version is Capella or later, process validator withdrawals.
 		if state.Version() >= version.Capella {
+			// ProcessWithdrawals updates the beacon state by applying validator withdrawals 
+			// from the execution payload. It validates withdrawals, adjusts validator balances, 
+			// and updates state indices for future withdrawals.
 			state, err = b.ProcessWithdrawals(state, executionData)
 			if err != nil {
 				return nil, errors.Wrap(err, "could not process withdrawals")
 			}
 		}
+		// ProcessPayload handles the execution payload, validates its consistency with 
+		// the beacon state after merge, and updates the state with the latest execution payload.
 		if err = b.ProcessPayload(state, blk.Body()); err != nil {
 			return nil, errors.Wrap(err, "could not process execution data")
 		}
 	}
 
+	/* process_randao(state, block.body) */
+	// will provide the randaoReveal field from BeaconBlockBody
 	randaoReveal := signed.Block().Body().RandaoReveal()
+	// generates a new Randao mix (RANDOM VALUE) and updates the beacon state's 
+	// latest randaoMixes field, without verifying the signature.
 	state, err = b.ProcessRandaoNoVerify(state, randaoReveal[:])
 	if err != nil {
 		tracing.AnnotateError(span, err)
 		return nil, errors.Wrap(err, "could not verify and process randao")
 	}
 
+	// process_eth1_data(state, block.body)
+	// ProcessEth1DataInBlock is an operation that ensures ETH1 data is 
+	// correctly added to the beacon chain's state.
 	state, err = b.ProcessEth1DataInBlock(ctx, state, signed.Block().Body().Eth1Data())
 	if err != nil {
 		tracing.AnnotateError(span, err)
 		return nil, errors.Wrap(err, "could not process eth1 data")
 	}
 
+	// process_operations(state, block.body)
+	// This function processes operations in the beacon block (such as deposits, slashing, and exits)
+	// and updates the beacon chain state. It skips verifying attestation signatures 
+	// for faster processing and handles different block versions with appropriate processing methods.
 	state, err = ProcessOperationsNoVerifyAttsSigs(ctx, state, signed.Block())
 	if err != nil {
 		tracing.AnnotateError(span, err)
 		return nil, errors.Wrap(err, "could not process block operation")
 	}
 
+	// Skips processing execution-related data for blocks from Phase 0 
+	// because execution wasn’t part of the beacon chain during that era.
 	if signed.Block().Version() == version.Phase0 {
 		return state, nil
 	}
 
+	// process_sync_aggregate(state, block.body.sync_aggregate)
+	// return's the syncAggregate field of BeaconBlockBody
 	sa, err := signed.Block().Body().SyncAggregate()
 	if err != nil {
 		return nil, errors.Wrap(err, "could not get sync aggregate from block")
 	}
+
+	// This function verifies the sync committee's aggregate signature 
+	// for the previous slot's block root.
 	state, _, err = altair.ProcessSyncAggregate(ctx, state, sa)
 	if err != nil {
 		return nil, errors.Wrap(err, "process_sync_aggregate failed")

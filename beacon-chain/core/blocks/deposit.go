@@ -103,6 +103,7 @@ func VerifyDeposit(beaconState state.ReadOnlyBeaconState, deposit *ethpb.Deposit
 	if deposit == nil || deposit.Data == nil {
 		return errors.New("received nil deposit or nil deposit data")
 	}
+	// return's Eth1Data from BeaconState
 	eth1Data := beaconState.Eth1Data()
 	if eth1Data == nil {
 		return errors.New("received nil eth1data in the beacon state")
@@ -113,6 +114,7 @@ func VerifyDeposit(beaconState state.ReadOnlyBeaconState, deposit *ethpb.Deposit
 	if err != nil {
 		return errors.Wrap(err, "could not tree hash deposit data")
 	}
+	// verify the merkle proof
 	if ok := trie.VerifyMerkleProofWithDepth(
 		receiptRoot,
 		leaf[:],

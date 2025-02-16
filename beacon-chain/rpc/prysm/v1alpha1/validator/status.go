@@ -404,29 +404,48 @@ func statusForPubKey(headState state.ReadOnlyBeaconState, pubKey []byte) (ethpb.
 }
 
 func assignmentStatus(beaconState state.ReadOnlyBeaconState, validatorIndex primitives.ValidatorIndex) ethpb.ValidatorStatus {
+	// Retrieve the validator from the beacon state using its index
 	validator, err := beaconState.ValidatorAtIndexReadOnly(validatorIndex)
 	if err != nil || validator.IsNil() {
 		return ethpb.ValidatorStatus_UNKNOWN_STATUS
 	}
 
+	// CurrentEpoch returns the current epoch number calculated from
+	// the slot number stored in beacon state.
 	currentEpoch := time.CurrentEpoch(beaconState)
 	farFutureEpoch := params.BeaconConfig().FarFutureEpoch
+	// EffectiveBalance returns the effective balance of the validator
 	validatorBalance := validator.EffectiveBalance()
+
+	// ActivationEligibilityEpoch is the epoch when the validator becomes eligible for activation
+	// eligibility does not mean immediate activation—validators must still wait 
+	// in the activation queue before being fully active.
 	if currentEpoch < validator.ActivationEligibilityEpoch() {
 		return depositStatus(validatorBalance)
 	}
+	// A validator's ActivationEpoch is the epoch when it officially becomes active and starts 
+	// participating in Ethereum's proof-of-stake consensus. This happens after it has been 
+	// eligible (ActivationEligibilityEpoch) and has waited in the activation queue.
 	if currentEpoch < validator.ActivationEpoch() {
 		return ethpb.ValidatorStatus_PENDING
 	}
+	// If the validator's ExitEpoch is equal to farFutureEpoch, 
+	// it means the validator is active and has not exited.
 	if validator.ExitEpoch() == farFutureEpoch {
 		return ethpb.ValidatorStatus_ACTIVE
 	}
+
+	// If the current epoch is before the validator's ExitEpoch, 
+	// the validator is in the process of exiting
 	if currentEpoch < validator.ExitEpoch() {
+		// If the validator has been slashed, return SLASHING status
 		if validator.Slashed() {
 			return ethpb.ValidatorStatus_SLASHING
 		}
+		// Otherwise, return EXITING status as the validator is in the exit process
 		return ethpb.ValidatorStatus_EXITING
 	}
+	// If the current epoch is beyond the ExitEpoch, the validator has exited
 	return ethpb.ValidatorStatus_EXITED
 }
 

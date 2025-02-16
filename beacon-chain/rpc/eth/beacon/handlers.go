@@ -689,7 +689,7 @@ func (s *Server) publishBlindedBlock(ctx context.Context, w http.ResponseWriter,
 // validation, a separate success response code (202) is used to indicate that the block was
 // successfully broadcast but failed integration. After Deneb, this additionally instructs the
 // beacon node to broadcast all given signed blobs.
-func (s *Server) PublishBlock(w http.ResponseWriter, r *http.Request) {
+func (s *Server) 	PublishBlock(w http.ResponseWriter, r *http.Request) {
 	ctx, span := trace.StartSpan(r.Context(), "beacon.PublishBlock")
 	defer span.End()
 	if shared.IsSyncing(r.Context(), w, s.SyncChecker, s.HeadFetcher, s.TimeFetcher, s.OptimisticModeFetcher) {

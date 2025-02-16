@@ -58,7 +58,7 @@ func (v readOnlyValidator) WithdrawableEpoch() primitives.Epoch {
 }
 
 // ExitEpoch returns the exit epoch of the
-// read only validator.
+// read only validator
 func (v readOnlyValidator) ExitEpoch() primitives.Epoch {
 	return v.validator.ExitEpoch
 }

@@ -73,20 +73,30 @@ func (vs *Server) ProposeAttestationElectra(ctx context.Context, singleAtt *ethp
 	ctx, span := trace.StartSpan(ctx, "AttesterServer.ProposeAttestationElectra")
 	defer span.End()
 
+	// // Calls the proposeAtt function to submit the attestation to the beacon node.
 	resp, err := vs.proposeAtt(ctx, singleAtt, singleAtt.GetCommitteeIndex())
 	if err != nil {
 		return nil, err
 	}
 
+	// AttestationStateFetcher allows for retrieving a beacon state corresponding to the block
+	// root of an attestation's target checkpoint.
+	// - Fetches the block root of attestation target checkpoint (the state of the blockchain at the target epoch of the attestation).
 	targetState, err := vs.AttestationStateFetcher.AttestationTargetState(ctx, singleAtt.Data.Target)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "Could not get target state")
 	}
+	
+	// BeaconCommitteeFromState returns the crosslink committee of a given slot and committee index. This
+	// is a spec implementation where state is used as an argument. In case of state retrieval
+	// becomes expensive, consider using BeaconCommittee below.
+	// // - Fetches the committee (a group of validators assigned to the same slot and committee index) from the target state.
 	committee, err := helpers.BeaconCommitteeFromState(ctx, targetState, singleAtt.Data.Slot, singleAtt.GetCommitteeIndex())
 	if err != nil {
 		return nil, status.Error(codes.Internal, "Could not get committee")
 	}
-
+	// Creates a copy of the SingleAttestation object.
+	// Converts it into an AttestationElectra object, which includes the committee information
 	singleAttCopy := singleAtt.Copy()
 	att := singleAttCopy.ToAttestationElectra(committee)
 	if features.Get().EnableExperimentalAttestationPool {
@@ -94,6 +104,9 @@ func (vs *Server) ProposeAttestationElectra(ctx context.Context, singleAtt *ethp
 			log.WithError(err).Error("Could not save attestation")
 		}
 	} else {
+		// Saves the attestation in the unaggregated attestation pool in a 
+		//separate goroutine (to avoid blocking the main thread).
+		// - SaveUnaggregatedAttestation saves an unaggregated attestation in cache.
 		go func() {
 			if err := vs.AttPool.SaveUnaggregatedAttestation(att); err != nil {
 				log.WithError(err).Error("Could not save unaggregated attestation")

@@ -131,7 +131,7 @@ func ValidateBLSToExecutionChange(st state.ReadOnlyBeaconState, signed *ethpb.Si
 //
 //	for expected_withdrawal, withdrawal in zip(expected_withdrawals, payload.withdrawals):
 //	     assert withdrawal == expected_withdrawal
-//	     decrease_balance(state, withdrawal.validator_index, withdrawal.amount)
+//	     decrease_balance(state1``, withdrawal.validator_index, withdrawal.amount)
 //
 //	# Update pending partial withdrawals [New in Electra:EIP7251]
 //	state.pending_partial_withdrawals = state.pending_partial_withdrawals[processed_partial_withdrawals_count:]

@@ -152,6 +152,13 @@ var appFlags = []cli.Flag{
 }
 
 func init() {
+	// Create a file for logging
+    file, err := os.OpenFile("debugging.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+    if err == nil {
+        logrus.SetOutput(file) // Log to file
+    } else {
+        logrus.Info("Failed to log to file, using default stderr")
+    }
 	appFlags = cmd.WrapFlags(append(appFlags, features.BeaconChainFlags...))
 }
 

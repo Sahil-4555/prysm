@@ -152,10 +152,15 @@ func (s *Store) SlashableAttestationCheck(
 
 	// Based on EIP-3076, validator should refuse to sign any attestation with source epoch less
 	// than the minimum source epoch present in that signer’s attestations.
+	// - Fetches the lowest source epoch the validator has signed.
+	// 	- prevent from Surrounding or conflicting attestations.
 	lowestSourceEpoch, exists, err := s.LowestSignedSourceEpoch(ctx, pubKey)
 	if err != nil {
 		return err
 	}
+	// If the new attestation’s source epoch is less than the lowest source epoch, 
+	// it returns an error. This prevents the validator from signing an attestation that 
+	// could conflict with a previous one.
 	if exists && indexedAtt.GetData().Source.Epoch < lowestSourceEpoch {
 		return fmt.Errorf(
 			"could not sign attestation lower than lowest source epoch in db, %d < %d",
@@ -163,19 +168,26 @@ func (s *Store) SlashableAttestationCheck(
 			lowestSourceEpoch,
 		)
 	}
+	// Fetches the signing root (a unique identifier for the attestation data) for the target epoch.
 	existingSigningRoot, err := s.SigningRootAtTargetEpoch(ctx, pubKey, indexedAtt.GetData().Target.Epoch)
 	if err != nil {
 		return err
 	}
+	// Checks if the new signing root is different from the existing one. If they differ, it’s not a repeat signing.
 	signingRootsDiffer := slashings.SigningRootsDiffer(existingSigningRoot, signingRoot)
 
 	// Based on EIP-3076, validator should refuse to sign any attestation with target epoch less
 	// than or equal to the minimum target epoch present in that signer’s attestations, except
 	// if it is a repeat signing as determined by the signingRoot.
+	// - Fetches the lowest target epoch the validator has signed.
+	// - prevent from Double voting or conflicting attestations.
 	lowestTargetEpoch, exists, err := s.LowestSignedTargetEpoch(ctx, pubKey)
 	if err != nil {
 		return err
 	}
+	// If the new attestation’s target epoch is less than or equal to the lowest target epoch 
+	// and the signing roots differ, it returns an error. This prevents the validator 
+	// from signing conflicting attestations.
 	if signingRootsDiffer && exists && indexedAtt.GetData().Target.Epoch <= lowestTargetEpoch {
 		return fmt.Errorf(
 			"could not sign attestation lower than or equal to lowest target epoch in db if signing roots differ, %d <= %d",
@@ -184,6 +196,8 @@ func (s *Store) SlashableAttestationCheck(
 		)
 	}
 	fmtKey := "0x" + hex.EncodeToString(pubKey[:])
+	// CheckSlashableAttestation verifies an incoming attestation is
+	// not a double vote for a validator public key nor a surround vote.
 	slashingKind, err := s.CheckSlashableAttestation(ctx, pubKey, signingRoot, indexedAtt)
 	if err != nil {
 		if emitAccountMetrics {
@@ -199,7 +213,8 @@ func (s *Store) SlashableAttestationCheck(
 		}
 		return errors.Wrap(err, failedAttLocalProtectionErr)
 	}
-
+	// SaveAttestationForPubKey saves an attestation for a validator public
+	// key for local validator slashing protection.
 	if err := s.SaveAttestationForPubKey(ctx, pubKey, signingRoot32, indexedAtt); err != nil {
 		return errors.Wrap(err, "could not save attestation history for validator public key")
 	}
@@ -226,6 +241,7 @@ func (s *Store) CheckSlashableAttestation(
 		}
 
 		// First we check for double votes.
+		// Fetches the signing root (a unique identifier for the attestation data) for the target epoch from the database
 		signingRootsBucket := pkBucket.Bucket(attestationSigningRootsBucket)
 		if signingRootsBucket != nil {
 			targetEpochBytes := bytesutil.EpochToBytesBigEndian(att.GetData().Target.Epoch)

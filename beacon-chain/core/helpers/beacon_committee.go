@@ -85,11 +85,20 @@ func AttestationCommittees(ctx context.Context, st state.ReadOnlyBeaconState, at
 // BeaconCommittees returns the list of all beacon committees for a given state at a given slot.
 func BeaconCommittees(ctx context.Context, state state.ReadOnlyBeaconState, slot primitives.Slot) ([][]primitives.ValidatorIndex, error) {
 	epoch := slots.ToEpoch(slot)
+	// ActiveValidatorCount returns the number of active validators in the state at the given epoch.
 	activeCount, err := ActiveValidatorCount(ctx, state, epoch)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not compute active validator count")
 	}
+
+	// SlotCommitteeCount returns the number of beacon committees of a slot. The
+	// active validator count is provided as an argument rather than an imported implementation
+	// from the spec definition. Having the active validator count as an argument allows for
+	// cheaper computation, instead of retrieving head state, one can retrieve the validator
+	// count.
 	committeesPerSlot := SlotCommitteeCount(activeCount)
+
+	// Seed returns the randao seed used for shuffling of a given epoch.
 	seed, err := Seed(state, epoch, params.BeaconConfig().DomainBeaconAttester)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not get seed")
@@ -99,6 +108,9 @@ func BeaconCommittees(ctx context.Context, state state.ReadOnlyBeaconState, slot
 	var activeIndices []primitives.ValidatorIndex
 
 	for idx := primitives.CommitteeIndex(0); idx < primitives.CommitteeIndex(len(committees)); idx++ {
+		// Committee fetches the shuffled indices by slot and committee index. Every list of indices
+		// represent one committee. Returns true if the list exists with slot and committee index. 
+		// Otherwise returns false, nil.
 		committee, err := committeeCache.Committee(ctx, slot, seed, idx)
 		if err != nil {
 			return nil, errors.Wrap(err, "could not interface with committee cache")
@@ -109,11 +121,17 @@ func BeaconCommittees(ctx context.Context, state state.ReadOnlyBeaconState, slot
 		}
 
 		if len(activeIndices) == 0 {
+			// ActiveValidatorIndices filters out active validators based on validator status
+			// and returns their indices in a list.
 			activeIndices, err = ActiveValidatorIndices(ctx, state, epoch)
 			if err != nil {
 				return nil, errors.Wrap(err, "could not get active indices")
 			}
 		}
+
+		// BeaconCommittee returns the beacon committee of a given slot and committee index. The
+		// validator indices and seed are provided as an argument rather than an imported implementation
+		// from the spec definition. Having them as an argument allows for cheaper computation run time.
 		committee, err = BeaconCommittee(ctx, activeIndices, seed, slot, idx)
 		if err != nil {
 			return nil, errors.Wrap(err, "could not compute beacon committee")
@@ -148,21 +166,21 @@ func BeaconCommitteeFromState(ctx context.Context, state state.ReadOnlyBeaconSta
 		return nil, errors.Wrap(err, "could not get seed")
 	}
 
-	committee, err := committeeCache.Committee(ctx, slot, seed, committeeIndex)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not interface with committee cache")
-	}
-	if committee != nil {
-		return committee, nil
-	}
+		committee, err := committeeCache.Committee(ctx, slot, seed, committeeIndex)
+		if err != nil {
+			return nil, errors.Wrap(err, "could not interface with committee cache")
+		}
+		if committee != nil {
+			return committee, nil
+		}
 
-	activeIndices, err := ActiveValidatorIndices(ctx, state, epoch)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not get active indices")
-	}
+		activeIndices, err := ActiveValidatorIndices(ctx, state, epoch)
+		if err != nil {
+			return nil, errors.Wrap(err, "could not get active indices")
+		}
 
-	return BeaconCommittee(ctx, activeIndices, seed, slot, committeeIndex)
-}
+		return BeaconCommittee(ctx, activeIndices, seed, slot, committeeIndex)
+	}
 
 // BeaconCommittee returns the beacon committee of a given slot and committee index. The
 // validator indices and seed are provided as an argument rather than an imported implementation
@@ -305,6 +323,7 @@ func CommitteeAssignments(ctx context.Context, state state.BeaconState, epoch pr
 	assignments := make(map[primitives.ValidatorIndex]*CommitteeAssignment)
 	// Compute committee assignments for each slot in the epoch.
 	for slot := startSlot; slot < startSlot+params.BeaconConfig().SlotsPerEpoch; slot++ {
+		// BeaconCommittees returns the list of all beacon committees for a given state at a given slot.
 		committees, err := BeaconCommittees(ctx, state, slot)
 		if err != nil {
 			return nil, errors.Wrap(err, "could not compute beacon committees")

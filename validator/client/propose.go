@@ -44,32 +44,55 @@ const (
 // the state root computation, and finally signed by the validator before being
 // sent back to the beacon node for broadcasting.
 func (v *validator) ProposeBlock(ctx context.Context, slot primitives.Slot, pubKey [fieldparams.BLSPubkeyLength]byte) {
+	
+	//If the slot is 0 (genesis slot), the function skips block proposal because the genesis block 
+	// is already created.
 	if slot == 0 {
 		log.Debug("Assigned to genesis slot, skipping proposal")
 		return
 	}
+
+	// The function starts a tracing span (validator.ProposeBlock) for monitoring and debugging. 	
 	ctx, span := trace.StartSpan(ctx, "validator.ProposeBlock")
 	defer span.End()
 
+	// In a blockchain system, multiple validators might attempt to propose blocks simultaneously. 
+	// The multilock ensures that only one validator with a specific role (RoleProposer) and public key
+	// (pubKey) can propose a block at a time. This prevents race conditions and ensures thread safety.
+	// NewMultilock creates a new multilock for the specified keys
 	lock := async.NewMultilock(fmt.Sprint(iface.RoleProposer), string(pubKey[:]))
 	lock.Lock()
 	defer lock.Unlock()
 
+	// It also logs the validator's public key for identification.
 	fmtKey := fmt.Sprintf("%#x", pubKey[:])
 	span.SetAttributes(trace.StringAttribute("validator", fmtKey))
 	log := log.WithField("pubkey", fmt.Sprintf("%#x", bytesutil.Trunc(pubKey[:])))
 
-	// Sign randao reveal, it's used to request block from beacon node
+	// the current slot number by the number of slots per epoch.
+	// For example, if slot = 64 and SlotsPerEpoch = 32. This means that slot 64 belongs to epoch 2
 	epoch := primitives.Epoch(slot / params.BeaconConfig().SlotsPerEpoch)
+
+	// Generate a cryptographic signature (RANDAO reveal) for a given epoch using the RANDAO domain
+	// and private key. This signature proves that the validator is actively taking part in block 
+	// proposals and helps add randomness to the blockchain.
 	randaoReveal, err := v.signRandaoReveal(ctx, pubKey, epoch, slot)
 	if err != nil {
 		log.WithError(err).Error("Failed to sign randao reveal")
+		// It determines whether the validator should emit (send out) metrics related to 
+		// its account and performance.
 		if v.emitAccountMetrics {
+			// The WithLabelValues function gets a counter metric for specific labels 
+			// (e.g., status code and HTTP method). If there's an error, it panics instead 
+			// of returning an error. 
 			ValidatorProposeFailVec.WithLabelValues(fmtKey).Inc()
 		}
 		return
 	}
 
+	// Graffiti gets the graffiti from cli or file for the validator public key.
+	// Graffiti is a custom message that a validator can add to a blockchain block.
+	// It’s optional and used for identification, fun, or tracking.
 	g, err := v.Graffiti(ctx, pubKey)
 	if err != nil {
 		// Graffiti is not a critical enough to fail block production and cause
@@ -78,7 +101,8 @@ func (v *validator) ProposeBlock(ctx context.Context, slot primitives.Slot, pubK
 		log.WithError(err).Warn("Could not get graffiti")
 	}
 
-	// Request block from beacon node
+	// - Requests a new block from the beacon node by passing the slot, RANDAO reveal, and graffiti.
+	// - The beacon node provides the data needed to construct the new block.
 	b, err := v.validatorClient.BeaconBlock(ctx, &ethpb.BlockRequest{
 		Slot:         slot,
 		RandaoReveal: randaoReveal,
@@ -92,7 +116,9 @@ func (v *validator) ProposeBlock(ctx context.Context, slot primitives.Slot, pubK
 		return
 	}
 
-	// Sign returned block from beacon node
+	// NewBeaconBlock creates a beacon block from a protobuf beacon block.
+	// - Converts the block from the beacon node into a format that can be signed.
+	// - Ensures the block is in the correct format for signing.
 	wb, err := blocks.NewBeaconBlock(b.Block)
 	if err != nil {
 		log.WithError(err).Error("Failed to wrap block")
@@ -101,7 +127,10 @@ func (v *validator) ProposeBlock(ctx context.Context, slot primitives.Slot, pubK
 		}
 		return
 	}
-
+	
+	// Sign block with proposer domain and private key.
+	// Returns the signature, block signing root, and any error.
+	// - The signature proves the block was created by the validator (proposer).
 	sig, signingRoot, err := v.signBlock(ctx, pubKey, epoch, slot, wb)
 	if err != nil {
 		log.WithError(err).Error("Failed to sign block")
@@ -111,12 +140,22 @@ func (v *validator) ProposeBlock(ctx context.Context, slot primitives.Slot, pubK
 		return
 	}
 
+	// BuildSignedBeaconBlock assembles a block.ReadOnlySignedBeaconBlock interface compatible 
+	// struct from a given beacon block and the appropriate signature. This method may be used 
+	// to easily create a signed beacon block.
+	// - Combines the block and signature into a signed beacon block.
+	// - The signed block is ready to be proposed to the network.
 	blk, err := blocks.BuildSignedBeaconBlock(wb, sig)
 	if err != nil {
 		log.WithError(err).Error("Failed to build signed beacon block")
 		return
 	}
 
+	// SlashableProposalCheck checks if a block proposal is slashable by comparing it with the
+	// block proposals history for the given public key in our complete slashing protection database defined by EIP-3076.
+	// If it is not, we then update the history.
+	// - Checks if proposing this block would violate slashing conditions (e.g., double proposal).
+	// - Prevents the validator from being penalized for malicious behavior.
 	if err := v.db.SlashableProposalCheck(ctx, pubKey, blk, signingRoot, v.emitAccountMetrics, ValidatorProposeFailVec); err != nil {
 		log.WithFields(
 			blockLogFields(pubKey, wb, nil),
@@ -127,21 +166,31 @@ func (v *validator) ProposeBlock(ctx context.Context, slot primitives.Slot, pubK
 		return
 	}
 
+	// Declares a variable genericSignedBlock to hold the final block that will be proposed to the network.
 	var genericSignedBlock *ethpb.GenericSignedBeaconBlock
 	// Special handling for Deneb blocks and later version because of blob side cars.
+	// - Checks if the block version is Deneb or later and if the block is not blinded.
+	// - Blinded blocks are a special type of block that don’t contain all the data (used for privacy or efficiency).
+	// - Blocks from Deneb onward may include blob sidecars (extra data attached to the block), so they need special handling.
 	if blk.Version() >= version.Deneb && !blk.IsBlinded() {
+		// - Converts the block into a protobuf format (a serialized format used for communication).
+		// - Protobuf is a compact and efficient format for transmitting data over the network. 
 		pb, err := blk.Proto()
 		if err != nil {
 			log.WithError(err).Error("Failed to get deneb block")
 			return
 		}
 		switch blk.Version() {
+		// - Calls buildGenericSignedBlockDenebWithBlobs to create a genericSignedBlock for Deneb blocks.
+		// - Deneb blocks require special handling because they include additional data (blobs).
 		case version.Deneb:
 			genericSignedBlock, err = buildGenericSignedBlockDenebWithBlobs(pb, b)
 			if err != nil {
 				log.WithError(err).Error("Failed to build generic signed block")
 				return
 			}
+		// - Calls buildGenericSignedBlockElectraWithBlobs to handle Electra-specific features
+		// - Electra is a newer version and may have additional features or data.
 		case version.Electra:
 			genericSignedBlock, err = buildGenericSignedBlockElectraWithBlobs(pb, b)
 			if err != nil {
@@ -158,6 +207,8 @@ func (v *validator) ProposeBlock(ctx context.Context, slot primitives.Slot, pubK
 			log.Errorf("Unsupported block version %s", version.String(blk.Version()))
 		}
 	} else {
+		// - For blocks that are not Deneb or later, it converts the block into a genericSignedBlock using blk.PbGenericBlock().
+		// - Ensures older block versions are still processed correctly.
 		genericSignedBlock, err = blk.PbGenericBlock()
 		if err != nil {
 			log.WithError(err).Error("Failed to create proposal request")
@@ -168,6 +219,9 @@ func (v *validator) ProposeBlock(ctx context.Context, slot primitives.Slot, pubK
 		}
 	}
 
+	// - Sends the signed block to the beacon node for broadcasting to the network.
+	// - This is the final step in proposing a new block to the blockchain.
+	// - beacon-chain/rpc/prysm/v1alpha1/validator/proposer.go
 	blkResp, err := v.validatorClient.ProposeBeaconBlock(ctx, genericSignedBlock)
 	if err != nil {
 		log.WithField("slot", slot).WithError(err).Error("Failed to propose block")
@@ -187,6 +241,7 @@ func (v *validator) ProposeBlock(ctx context.Context, slot primitives.Slot, pubK
 		log.WithError(err).Error("Failed to log proposed block")
 	}
 
+	// Tracks how many times the validator successfully proposed a block.
 	if v.emitAccountMetrics {
 		ValidatorProposeSuccessVec.WithLabelValues(fmtKey).Inc()
 	}
@@ -358,6 +413,9 @@ func (v *validator) signRandaoReveal(ctx context.Context, pubKey [fieldparams.BL
 	ctx, span := trace.StartSpan(ctx, "validator.signRandaoReveal")
 	defer span.End()
 
+	// Calls domainData to fetch the domain data for the DomainRandao.
+	// The domain ensures the signature is only valid for RANDAO-related operations.
+	// Domains prevent signature reuse across different purposes (e.g., block proposals, attestations).
 	domain, err := v.domainData(ctx, epoch, params.BeaconConfig().DomainRandao[:])
 	if err != nil {
 		return nil, errors.Wrap(err, domainDataErr)
@@ -367,11 +425,17 @@ func (v *validator) signRandaoReveal(ctx context.Context, pubKey [fieldparams.BL
 	}
 
 	var randaoReveal bls.Signature
+	// Converts the epoch into a SSZUint64 type (a serializable format for Ethereum 2.0).
 	sszUint := primitives.SSZUint64(epoch)
+	// Computes the signing root by combining the epoch and the domain.
+	// The signing root is the data that will be signed. Ensures the signature is unique to this epoch and domain.
 	root, err := signing.ComputeSigningRoot(&sszUint, domain.SignatureDomain)
 	if err != nil {
 		return nil, err
 	}
+
+	// Calls the key manager (v.km.Sign) to sign the signing root using the validator’s private key.
+	// The signature proves the validator is participating honestly and contributes to the blockchain’s randomness.
 	randaoReveal, err = v.km.Sign(ctx, &validatorpb.SignRequest{
 		PublicKey:       pubKey[:],
 		SigningRoot:     root[:],
@@ -382,6 +446,8 @@ func (v *validator) signRandaoReveal(ctx context.Context, pubKey [fieldparams.BL
 	if err != nil {
 		return nil, err
 	}
+	// Converts the signature into a byte array ([]byte) for transmission or storage.
+	// The marshaled signature can be sent to the beacon node for verification.
 	return randaoReveal.Marshal(), nil
 }
 
@@ -390,7 +456,9 @@ func (v *validator) signRandaoReveal(ctx context.Context, pubKey [fieldparams.BL
 func (v *validator) signBlock(ctx context.Context, pubKey [fieldparams.BLSPubkeyLength]byte, epoch primitives.Epoch, slot primitives.Slot, b interfaces.ReadOnlyBeaconBlock) ([]byte, [32]byte, error) {
 	ctx, span := trace.StartSpan(ctx, "validator.signBlock")
 	defer span.End()
-
+	// Calls domainData to fetch the domain data for the DomainBeaconProposer
+	// Domain data in blockchain, specifically in Ethereum's beacon chain, serves as a cryptographic
+	// context that ensures signatures are purpose-specific and cannot be reused across different types of actions.
 	domain, err := v.domainData(ctx, epoch, params.BeaconConfig().DomainBeaconProposer[:])
 	if err != nil {
 		return nil, [32]byte{}, errors.Wrap(err, domainDataErr)
@@ -399,14 +467,25 @@ func (v *validator) signBlock(ctx context.Context, pubKey [fieldparams.BLSPubkey
 		return nil, [32]byte{}, errors.New(domainDataErr)
 	}
 
+	// ComputeSigningRoot computes the root of the object by calculating the hash tree root of the
+	// signing data with the given domain.
+	// - Computes the signing root by combining the block data and the domain.
+	// - The signing root is the data that will be signed. & Ensures the signature is unique to this block and domain.
 	blockRoot, err := signing.ComputeSigningRoot(b, domain.SignatureDomain)
 	if err != nil {
 		return nil, [32]byte{}, errors.Wrap(err, signingRootErr)
 	}
+
+	// Converts the block into a signing request object (sro).
+	// This object contains the data to be signed.
+	// Ensures the block is in the correct format for signing.
 	sro, err := b.AsSignRequestObject()
 	if err != nil {
 		return nil, [32]byte{}, err
 	}
+
+	// Sign signs a message using a validator's private key.
+	// The signature proves the block was created by the validator (proposer).
 	sig, err := v.km.Sign(ctx, &validatorpb.SignRequest{
 		PublicKey:       pubKey[:],
 		SigningRoot:     blockRoot[:],
@@ -417,6 +496,8 @@ func (v *validator) signBlock(ctx context.Context, pubKey [fieldparams.BLSPubkey
 	if err != nil {
 		return nil, [32]byte{}, errors.Wrap(err, "could not sign block proposal")
 	}
+
+	// Converts the signature into a byte array ([]byte) for transmission or storage.
 	return sig.Marshal(), blockRoot, nil
 }
 

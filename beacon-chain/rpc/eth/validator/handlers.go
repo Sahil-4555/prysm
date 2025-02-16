@@ -792,15 +792,19 @@ func (s *Server) GetAttesterDuties(w http.ResponseWriter, r *http.Request) {
 	ctx, span := trace.StartSpan(r.Context(), "validator.GetAttesterDuties")
 	defer span.End()
 
+	// IsSyncing checks whether the beacon node is currently syncing and writes out the sync status.
 	if shared.IsSyncing(ctx, w, s.SyncChecker, s.HeadFetcher, s.TimeFetcher, s.OptimisticModeFetcher) {
 		return
 	}
 
+	// Extract Epoch from Request
 	_, requestedEpochUint, ok := shared.UintFromRoute(w, r, "epoch")
 	if !ok {
 		return
 	}
 	requestedEpoch := primitives.Epoch(requestedEpochUint)
+
+	// Decode Validator Indices
 	var indices []string
 	err := json.NewDecoder(r.Body).Decode(&indices)
 	switch {
@@ -824,6 +828,9 @@ func (s *Server) GetAttesterDuties(w http.ResponseWriter, r *http.Request) {
 		requestedValIndices[i] = primitives.ValidatorIndex(valIx)
 	}
 
+	// Validators are only assigned duties for the current or next epoch.
+	// Requests for epochs too far ahead are rejected since Ethereum assigns committees 
+	// only for near-future epochs.
 	cs := s.TimeFetcher.CurrentSlot()
 	currentEpoch := slots.ToEpoch(cs)
 	nextEpoch := currentEpoch + 1
@@ -846,23 +853,34 @@ func (s *Server) GetAttesterDuties(w http.ResponseWriter, r *http.Request) {
 		httputil.HandleError(w, fmt.Sprintf("Could not get start slot from epoch %d: %v", requestedEpoch, err), http.StatusInternalServerError)
 		return
 	}
-
+	// StateBySlot returns the post-state for the requested slot. To generate the state, it uses the
+	// most recent canonical state prior to the target slot, and all canonical blocks
+	// between the found state's slot and the target slot.
+	// process_blocks is applied for all canonical blocks, and process_slots is called for any skipped
+	// slots, or slots following the most recent canonical block up to and including the target slot.
 	st, err := s.Stater.StateBySlot(ctx, startSlot)
 	if err != nil {
 		httputil.HandleError(w, "Could not get state: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
+	// CommitteeAssignments calculates committee assignments for each validator during the specified epoch.
+	// It retrieves active validator indices, determines the number of committees per slot, and computes
+	// assignments for each validator based on their presence in the provided validators slice.
 	assignments, err := helpers.CommitteeAssignments(ctx, st, requestedEpoch, requestedValIndices)
 	if err != nil {
 		httputil.HandleError(w, "Could not compute committee assignments: "+err.Error(), http.StatusInternalServerError)
 		return
-	}
+	}	
+	// ActiveValidatorCount returns the number of active validators in the state at the given epoch.
 	activeValidatorCount, err := helpers.ActiveValidatorCount(ctx, st, requestedEpoch)
 	if err != nil {
 		httputil.HandleError(w, "Could not get active validator count: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// SlotCommitteeCount returns the number of beacon committees of a slot. The
+	// active validator count is provided as an argument rather than an imported implementation
+	// from the spec definition. Having the active validator count as an argument allows for
+	// cheaper computation, instead of retrieving head state, one can retrieve the validator count.
 	committeesAtSlot := helpers.SlotCommitteeCount(activeValidatorCount)
 
 	duties := make([]*structs.AttesterDuty, 0, len(requestedValIndices))
@@ -898,20 +916,36 @@ func (s *Server) GetAttesterDuties(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var dependentRoot []byte
+	// If the requested epoch is 0 or 1, use the Genesis Block Root, as there is no previous state to reference.
+	// The Genesis Block Root is the first block in Ethereum's Beacon Chain, marking the start of the blockchain.
+	// In epochs 0 and 1, validators' attestations must refer to the Genesis Block as the initial state.
 	if requestedEpoch <= 1 {
 		r, err := s.BeaconDB.GenesisBlockRoot(ctx)
 		if err != nil {
 			httputil.HandleError(w, "Could not get genesis block root: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// For epochs 0 and 1, we set the dependentRoot to the Genesis Block Root.
 		dependentRoot = r[:]
 	} else {
+		// For epochs after 1, get the dependent root for the requested epoch.
+    	// This is the state of the blockchain at the most recent finalized block.
+    	// This ensures that attestations are linked to the right version of the blockchain.
 		dependentRoot, err = attestationDependentRoot(st, requestedEpoch)
 		if err != nil {
 			httputil.HandleError(w, "Could not get dependent root: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
+	// IsOptimistic returns true if the current head is optimistic.
+	/* The optimistic field in the node struct indicates whether the block has been 
+	   fully validated or not.
+
+	 	optimistic = true → The block has not been fully validated yet. It is assumed to be valid, 
+				but the node has not yet verified all the execution-layer transactions within it.
+		optimistic = false → The block has been fully validated, meaning both consensus-layer 
+				and execution-layer checks have been completed.
+	*/
 	isOptimistic, err := s.OptimisticModeFetcher.IsOptimistic(ctx)
 	if err != nil {
 		httputil.HandleError(w, "Could not check optimistic status: "+err.Error(), http.StatusInternalServerError)
@@ -931,20 +965,25 @@ func (s *Server) GetProposerDuties(w http.ResponseWriter, r *http.Request) {
 	ctx, span := trace.StartSpan(r.Context(), "validator.GetProposerDuties")
 	defer span.End()
 
+	// IsSyncing checks whether the beacon node is currently syncing and writes out the sync status.
 	if shared.IsSyncing(ctx, w, s.SyncChecker, s.HeadFetcher, s.TimeFetcher, s.OptimisticModeFetcher) {
 		return
 	}
 
+	// Extract the requested epoch from the API route.
 	_, requestedEpochUint, ok := shared.UintFromRoute(w, r, "epoch")
 	if !ok {
 		return
 	}
 	requestedEpoch := primitives.Epoch(requestedEpochUint)
 
+	// Get the current slot and derive the current and next epoch.
 	cs := s.TimeFetcher.CurrentSlot()
 	currentEpoch := slots.ToEpoch(cs)
 	nextEpoch := currentEpoch + 1
 	var nextEpochLookahead bool
+
+	// Validate the requested epoch; it should not be greater than the next epoch.
 	if requestedEpoch > nextEpoch {
 		httputil.HandleError(
 			w,
@@ -958,6 +997,7 @@ func (s *Server) GetProposerDuties(w http.ResponseWriter, r *http.Request) {
 		nextEpochLookahead = true
 	}
 
+	// Get the starting slot of the requested epoch.
 	epochStartSlot, err := slots.EpochStart(requestedEpoch)
 	if err != nil {
 		httputil.HandleError(w, fmt.Sprintf("Could not get start slot of epoch %d: %v", requestedEpoch, err), http.StatusInternalServerError)
@@ -966,24 +1006,33 @@ func (s *Server) GetProposerDuties(w http.ResponseWriter, r *http.Request) {
 	var st state.BeaconState
 	// if the requested epoch is new, use the head state and the next slot cache
 	if requestedEpoch < currentEpoch {
+		// Retrieves the latest known state before or at the given slot (startSlot).
+		// It then applies all valid blocks and skipped slots to update the state up to startSlot.
+		// This ensures we get an accurate and up-to-date state for the requested slot.
 		st, err = s.Stater.StateBySlot(ctx, epochStartSlot)
 		if err != nil {
 			httputil.HandleError(w, fmt.Sprintf("Could not get state for slot %d: %v ", epochStartSlot, err), http.StatusInternalServerError)
 			return
 		}
 	} else {
+		// HeadState returns the head state of the chain.
+		// If the head is nil from service struct,
+		// it will attempt to get the head state from DB.
 		st, err = s.HeadFetcher.HeadState(ctx)
 		if err != nil {
 			httputil.HandleError(w, fmt.Sprintf("Could not get head state: %v ", err), http.StatusInternalServerError)
 			return
 		}
 		// Advance state with empty transitions up to the requested epoch start slot.
+		// Updates state to the requested epoch start slot if it's behind.  
 		if st.Slot() < epochStartSlot {
+			// HeadRoot returns the root of the head of the chain.
 			headRoot, err := s.HeadFetcher.HeadRoot(ctx)
 			if err != nil {
 				httputil.HandleError(w, fmt.Sprintf("Could not get head root: %v ", err), http.StatusInternalServerError)
 				return
 			}
+			// ProcessSlotsUsingNextSlotCache processes slots by using next slot cache for higher efficiency.
 			st, err = transition.ProcessSlotsUsingNextSlotCache(ctx, st, headRoot, epochStartSlot)
 			if err != nil {
 				httputil.HandleError(w, fmt.Sprintf("Could not process slots up to %d: %v ", epochStartSlot, err), http.StatusInternalServerError)
@@ -994,8 +1043,14 @@ func (s *Server) GetProposerDuties(w http.ResponseWriter, r *http.Request) {
 
 	var assignments map[primitives.ValidatorIndex][]primitives.Slot
 	if nextEpochLookahead {
+		// ProposerAssignments calculates proposer assignments for each validator during the specified epoch.
+		// It verifies the validity of the epoch, then iterates through each slot in the epoch to determine the
+		// proposer for that slot and assigns them accordingly.
 		assignments, err = helpers.ProposerAssignments(ctx, st, nextEpoch)
 	} else {
+		// ProposerAssignments calculates proposer assignments for each validator during the specified epoch.
+		// It verifies the validity of the epoch, then iterates through each slot in the epoch to determine the
+		// proposer for that slot and assigns them accordingly.
 		assignments, err = helpers.ProposerAssignments(ctx, st, requestedEpoch)
 	}
 	if err != nil {
@@ -1005,6 +1060,8 @@ func (s *Server) GetProposerDuties(w http.ResponseWriter, r *http.Request) {
 
 	duties := make([]*structs.ProposerDuty, 0)
 	for index, proposalSlots := range assignments {
+		// ValidatorAtIndexReadOnly is the validator at the provided index. This method
+		// doesn't clone the validator.
 		val, err := st.ValidatorAtIndexReadOnly(index)
 		if err != nil {
 			httputil.HandleError(w, fmt.Sprintf("Could not get validator at index %d: %v", index, err), http.StatusInternalServerError)
@@ -1022,6 +1079,9 @@ func (s *Server) GetProposerDuties(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var dependentRoot []byte
+	// Determines the dependent root for proposer duties based on the requested epoch.
+	// If the requested epoch is 0, use the Genesis Block Root as there is no prior state reference.
+	// For other epochs, retrieve the dependent root corresponding to the requested epoch.
 	if requestedEpoch == 0 {
 		r, err := s.BeaconDB.GenesisBlockRoot(ctx)
 		if err != nil {
@@ -1036,6 +1096,15 @@ func (s *Server) GetProposerDuties(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// IsOptimistic returns true if the current head is optimistic.
+	/* The optimistic field in the node struct indicates whether the block has been 
+	   fully validated or not.
+
+	 	optimistic = true → The block has not been fully validated yet. It is assumed to be valid, 
+				but the node has not yet verified all the execution-layer transactions within it.
+		optimistic = false → The block has been fully validated, meaning both consensus-layer 
+				and execution-layer checks have been completed.
+	*/
 	isOptimistic, err := s.OptimisticModeFetcher.IsOptimistic(ctx)
 	if err != nil {
 		httputil.HandleError(w, "Could not check optimistic status: "+err.Error(), http.StatusInternalServerError)

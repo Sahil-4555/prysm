@@ -101,8 +101,8 @@ func (c *CommitteeCache) CompressCommitteeCache() {
 	log.Warnf("Reducing committee cache size from %d to %d", expandedCommitteeCacheSize, maxCommitteesCacheSize)
 }
 
-// Committee fetches the shuffled indices by slot and committee index. Every list of indices
-// represent one committee. Returns true if the list exists with slot and committee index. Otherwise returns false, nil.
+	// Committee fetches the shuffled indices by slot and committee index. Every list of indices
+	// represent one committee. Returns true if the list exists with slot and committee index. Otherwise returns false, nil.
 func (c *CommitteeCache) Committee(ctx context.Context, slot primitives.Slot, seed [32]byte, index primitives.CommitteeIndex) ([]primitives.ValidatorIndex, error) {
 	if err := c.checkInProgress(ctx, seed); err != nil {
 		return nil, err

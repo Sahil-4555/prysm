@@ -430,6 +430,10 @@ load("@com_github_atlassian_bazel_tools//gometalinter:deps.bzl", "gometalinter_d
 gometalinter_dependencies()
 
 load("@bazel_gazelle//:deps.bzl", "gazelle_dependencies")
+load("//:repositories.bzl", "go_dependencies")
+
+# gazelle:repository_macro repositories.bzl%go_dependencies
+go_dependencies()
 
 gazelle_dependencies()
 

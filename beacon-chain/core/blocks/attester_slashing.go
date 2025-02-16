@@ -116,31 +116,31 @@ func VerifyAttesterSlashing(ctx context.Context, beaconState state.ReadOnlyBeaco
 	return nil
 }
 
-// IsSlashableAttestationData verifies a slashing against the Casper Proof of Stake FFG rules.
-//
-// Spec pseudocode definition:
-//
-//	def is_slashable_attestation_data(data_1: AttestationData, data_2: AttestationData) -> bool:
-//	 """
-//	 Check if ``data_1`` and ``data_2`` are slashable according to Casper FFG rules.
-//	 """
-//	 return (
-//	     # Double vote
-//	     (data_1 != data_2 and data_1.target.epoch == data_2.target.epoch) or
-//	     # Surround vote
-//	     (data_1.source.epoch < data_2.source.epoch and data_2.target.epoch < data_1.target.epoch)
-//	 )
-func IsSlashableAttestationData(data1, data2 *ethpb.AttestationData) bool {
-	if data1 == nil || data2 == nil || data1.Target == nil || data2.Target == nil || data1.Source == nil || data2.Source == nil {
-		return false
+	// IsSlashableAttestationData verifies a slashing against the Casper Proof of Stake FFG rules.
+	//
+	// Spec pseudocode definition:
+	//
+	//	def is_slashable_attestation_data(data_1: AttestationData, data_2: AttestationData) -> bool:
+	//	 """
+	//	 Check if ``data_1`` and ``data_2`` are slashable according to Casper FFG rules.
+	//	 """
+	//	 return (
+	//	     # Double vote
+	//	     (data_1 != data_2 and data_1.target.epoch == data_2.target.epoch) or
+	//	     # Surround vote
+	//	     (data_1.source.epoch < data_2.source.epoch and data_2.target.epoch < data_1.target.epoch)
+	//	 )
+	func IsSlashableAttestationData(data1, data2 *ethpb.AttestationData) bool {
+		if data1 == nil || data2 == nil || data1.Target == nil || data2.Target == nil || data1.Source == nil || data2.Source == nil {
+			return false
+		}
+		isDoubleVote := !attestation.AttDataIsEqual(data1, data2) && data1.Target.Epoch == data2.Target.Epoch
+		att1 := &ethpb.IndexedAttestation{Data: data1}
+		att2 := &ethpb.IndexedAttestation{Data: data2}
+		// Check if att1 is surrounding att2.
+		isSurroundVote := slashings.IsSurround(att1, att2)
+		return isDoubleVote || isSurroundVote
 	}
-	isDoubleVote := !attestation.AttDataIsEqual(data1, data2) && data1.Target.Epoch == data2.Target.Epoch
-	att1 := &ethpb.IndexedAttestation{Data: data1}
-	att2 := &ethpb.IndexedAttestation{Data: data2}
-	// Check if att1 is surrounding att2.
-	isSurroundVote := slashings.IsSurround(att1, att2)
-	return isDoubleVote || isSurroundVote
-}
 
 // SlashableAttesterIndices returns the intersection of attester indices from both attestations in this slashing.
 func SlashableAttesterIndices(slashing ethpb.AttSlashing) []uint64 {

@@ -206,9 +206,16 @@ func (s *Store) SlashableProposalCheck(
 	emitAccountMetrics bool,
 	validatorProposeFailVec *prometheus.CounterVec,
 ) error {
+	// Formats the validator’s public key into a readable string (fmtKey).
 	fmtKey := fmt.Sprintf("%#x", pubKey[:])
-
+	
+	// Extracts the block data from the signed block.
 	blk := signedBlock.Block()
+	// Fetches the proposal history for the validator’s public key and the current slot.
+	// - prevSigningRoot: The signing root of the previous proposal for this slot (if it exists).
+	// - proposalAtSlotExists: Whether a proposal exists for this slot.
+	// - prevSigningRootExists: Whether a signing root exists for the previous proposal.
+	// The proposal history is used to check if the validator has already proposed a block for this slot.
 	prevSigningRoot, proposalAtSlotExists, prevSigningRootExists, err := s.ProposalHistoryForSlot(ctx, pubKey, blk.Slot())
 	if err != nil {
 		if emitAccountMetrics {
@@ -217,6 +224,11 @@ func (s *Store) SlashableProposalCheck(
 		return errors.Wrap(err, "failed to get proposal history")
 	}
 
+	// LowestSignedProposal returns the lowest signed proposal slot for a validator public key.
+	// If no data exists, a boolean of value false is returned.
+	// - Fetches the minimum slot for which the validator(identified by pubKey) has signed a block proposal.
+	// - lowestSignedProposalSlot: The slot number
+	// - lowestProposalExists: Boolean indicating if proposal exists
 	lowestSignedProposalSlot, lowestProposalExists, err := s.LowestSignedProposal(ctx, pubKey)
 	if err != nil {
 		return err
@@ -224,6 +236,7 @@ func (s *Store) SlashableProposalCheck(
 
 	// Based on EIP-3076 - Condition 2
 	// -------------------------------
+	// Enforces EIP-3076 Condition 2, which prevents validators from signing blocks that could lead to slashing.
 	if lowestProposalExists {
 		// If the block slot is (strictly) less than the lowest signed proposal slot in the DB, we consider it slashable.
 		if blk.Slot() < lowestSignedProposalSlot {
@@ -239,9 +252,14 @@ func (s *Store) SlashableProposalCheck(
 		// - condition2: there is  a signed proposal in the DB for this slot, but with no associated signing root, or
 		// - condition3: there is  a signed proposal in the DB for this slot, but the signing root differs,
 		// ==> we consider it slashable.
+		// 1. No proposal exists for this slot (condition1)
 		condition1 := !proposalAtSlotExists
+		// 2. A proposal exists but has no signing root (condition2)
 		condition2 := proposalAtSlotExists && !prevSigningRootExists
+		// 3. A proposal exists but the signing root differs (condition3)
 		condition3 := proposalAtSlotExists && prevSigningRootExists && prevSigningRoot != signingRoot
+		// Prevents validators from signing conflicting blocks for the same or earlier slots.
+		// Like a one-way street - once you sign block at slot N, you can't go back and sign blocks before slot N
 		if blk.Slot() == lowestSignedProposalSlot && (condition1 || condition2 || condition3) {
 			return fmt.Errorf(
 				"could not sign block with slot == lowest signed slot in db if it is not a repeat signing, block slot: %d == slowest signed slot: %d",
@@ -252,11 +270,14 @@ func (s *Store) SlashableProposalCheck(
 	}
 
 	// Based on EIP-3076 - Condition 1
+	// Enforces EIP-3076 Condition 1, which prevents validators from signing multiple blocks for the same slot.
 	// -------------------------------
 	// If there is a signed proposal in the DB for this slot and
 	// - there is no associated signing root, or
 	// - the signing root differs,
 	// ==> we consider it slashable.
+	// - A validator must never sign two different blocks for the same slot
+	// - This prevents "double proposals" or proposing multiple blocks at the same height
 	if proposalAtSlotExists && (!prevSigningRootExists || prevSigningRoot != signingRoot) {
 		if emitAccountMetrics {
 			validatorProposeFailVec.WithLabelValues(fmtKey).Inc()
@@ -265,6 +286,9 @@ func (s *Store) SlashableProposalCheck(
 	}
 
 	// Save the proposal for this slot.
+	// - This function keeps track of when a validator proposes blocks (in which slots) and ensures
+	// the database is updated with the earliest and latest slots they've participated in. 
+	// It also cleans up old data to save space.
 	if err := s.SaveProposalHistoryForSlot(ctx, pubKey, blk.Slot(), signingRoot[:]); err != nil {
 		if emitAccountMetrics {
 			validatorProposeFailVec.WithLabelValues(fmtKey).Inc()

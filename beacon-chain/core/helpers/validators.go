@@ -300,25 +300,38 @@ func ProposerIndexAtSlotFromCheckpoint(c *forkchoicetypes.Checkpoint, slot primi
 // point of view of the given state as head state
 func BeaconProposerIndexAtSlot(ctx context.Context, state state.ReadOnlyBeaconState, slot primitives.Slot) (primitives.ValidatorIndex, error) {
 	e := slots.ToEpoch(slot)
-	// The cache uses the state root of the previous epoch - minimum_seed_lookahead last slot as key. (e.g. Starting epoch 1, slot 32, the key would be block root at slot 31)
+	// The cache uses the state root of the previous epoch - minimum_seed_lookahead last slot as key.
+	// (e.g. Starting epoch 1, slot 32, the key would be block root at slot 31)
 	// For simplicity, the node will skip caching of genesis epoch.
 	if e > params.BeaconConfig().GenesisEpoch+params.BeaconConfig().MinSeedLookahead {
+		// Get the last slot of the previous epoch.
 		s, err := slots.EpochEnd(e - 1)
 		if err != nil {
 			return 0, err
 		}
+
+		// Fetch the state root at that slot.
 		r, err := StateRootAtSlot(state, s)
 		if err != nil {
 			return 0, err
 		}
+
 		if r != nil && !bytes.Equal(r, params.BeaconConfig().ZeroHash[:]) {
+			// cachedProposerIndexAtSlot returns the proposer index at the given slot from
+			// the cache at the given root key.
 			pid, err := cachedProposerIndexAtSlot(slot, [32]byte(r))
 			if err == nil {
 				return pid, nil
 			}
+			// UpdateProposerIndicesInCache updates proposer indices entry of the committee cache.
+			// Input state is used to retrieve active validator indices.
+			// Input root is to use as key in the cache.
+			// Input epoch is the epoch to retrieve proposer indices for.
 			if err := UpdateProposerIndicesInCache(ctx, state, e); err != nil {
 				return 0, errors.Wrap(err, "could not update proposer index cache")
 			}
+			// cachedProposerIndexAtSlot returns the proposer index at the given slot from
+			// the cache at the given root key.
 			pid, err = cachedProposerIndexAtSlot(slot, [32]byte(r))
 			if err == nil {
 				return pid, nil
@@ -326,19 +339,27 @@ func BeaconProposerIndexAtSlot(ctx context.Context, state state.ReadOnlyBeaconSt
 		}
 	}
 
+	// Seed returns the randao seed used for shuffling of a given epoch.
 	seed, err := Seed(state, e, params.BeaconConfig().DomainBeaconProposer)
 	if err != nil {
 		return 0, errors.Wrap(err, "could not generate seed")
 	}
 
+	// Combine seed with the slot number for randomness.
 	seedWithSlot := append(seed[:], bytesutil.Bytes8(uint64(slot))...)
 	seedWithSlotHash := hash.Hash(seedWithSlot)
 
+	// ActiveValidatorIndices filters out active validators based on validator status
+	// and returns their indices in a list.
 	indices, err := ActiveValidatorIndices(ctx, state, e)
 	if err != nil {
 		return 0, errors.Wrap(err, "could not get active indices")
 	}
 
+	// The ComputeProposerIndex function selects a validator to propose a block. 
+	// Validators with higher staked ETH (effective balance) have a higher chance of 
+	// being chosen. The selection is done using a randomized but stake-weighted process
+	// to ensure fairness.
 	return ComputeProposerIndex(state, indices, seedWithSlotHash)
 }
 
@@ -363,40 +384,60 @@ func BeaconProposerIndexAtSlot(ctx context.Context, state state.ReadOnlyBeaconSt
 //	       random_value = bytes_to_uint64(random_bytes[offset:offset + 2])
 //	       effective_balance = state.validators[candidate_index].effective_balance
 //	       # [Modified in Electra:EIP7251]
-//	       if effective_balance * MAX_RANDOM_VALUE >= MAX_EFFECTIVE_BALANCE_ELECTRA * random_value:
+//	       if effective_balance * MAX_RANDOM_VALUE >= 	 * random_value:
 //	           return candidate_index
 //	       i += 1
 func ComputeProposerIndex(bState state.ReadOnlyBeaconState, activeIndices []primitives.ValidatorIndex, seed [32]byte) (primitives.ValidatorIndex, error) {
+	// If no validators are active, the function returns an error.
 	length := uint64(len(activeIndices))
 	if length == 0 {
 		return 0, errors.New("empty active indices list")
 	}
+
+	// Uses a custom SHA-256 hash function to generate randomness.
 	hashFunc := hash.CustomSHA256Hasher()
 	beaconConfig := params.BeaconConfig()
+	// Copies the seed into a buffer for further use in randomness calculations.
 	seedBuffer := make([]byte, len(seed)+8)
 	copy(seedBuffer, seed[:])
 
+	// This loop runs indefinitely until a proposer is selected.
+	// Why a loop? Because we keep generating a candidate until one meets the probability condition.
 	for i := uint64(0); ; i++ {
+		// ComputeShuffledIndex returns the shuffled validator index corresponding
+		// to seed and index count.
 		candidateIndex, err := ComputeShuffledIndex(primitives.ValidatorIndex(i%length), length, seed, true /* shuffle */)
 		if err != nil {
 			return 0, err
 		}
+
+		// Convert shuffled index to the actual validator index
 		candidateIndex = activeIndices[candidateIndex]
+
+		// Validate that the computed index falls within the allowed range
+		// `bState.NumValidators()` gives the total number of validators.
 		if uint64(candidateIndex) >= uint64(bState.NumValidators()) {
 			return 0, errors.New("active index out of range")
 		}
 
+		// ValidatorAtIndexReadOnly is the validator at the provided index. This method
+		// doesn't clone the validator.
 		v, err := bState.ValidatorAtIndexReadOnly(candidateIndex)
 		if err != nil {
 			return 0, err
 		}
+
+		// Get the validator's effective balance
 		effectiveBal := v.EffectiveBalance()
+
 		if bState.Version() >= version.Electra {
 			binary.LittleEndian.PutUint64(seedBuffer[len(seed):], i/16)
 			randomBytes := hashFunc(seedBuffer)
 			offset := (i % 16) * 2
 			randomValue := uint64(randomBytes[offset]) | uint64(randomBytes[offset+1])<<8
 
+			// Higher stake = higher probability of selection.
+			// effective_balance * MAX_RANDOM_VALUE >= MAX_EFFECTIVE_BALANCE_ELECTRA * random_value
 			if effectiveBal*fieldparams.MaxRandomValueElectra >= beaconConfig.MaxEffectiveBalanceElectra*randomValue {
 				return candidateIndex, nil
 			}

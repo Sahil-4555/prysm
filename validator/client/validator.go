@@ -920,6 +920,7 @@ func (v *validator) domainData(ctx context.Context, epoch primitives.Epoch, doma
 	ctx, span := trace.StartSpan(ctx, "validator.domainData")
 	defer span.End()
 
+	// Acquire a read lock to safely check the cache for domain data.
 	v.domainDataLock.RLock()
 
 	req := &ethpb.DomainRequest{
@@ -927,12 +928,16 @@ func (v *validator) domainData(ctx context.Context, epoch primitives.Epoch, doma
 		Domain: domain,
 	}
 
+	// reate a unique cache key using the epoch and domain type.
 	key := strings.Join([]string{strconv.FormatUint(uint64(req.Epoch), 10), hex.EncodeToString(req.Domain)}, ",")
 
+	//  // Check if the domain data is already in the cache.
 	if val, ok := v.domainDataCache.Get(key); ok {
+		// If found in the cache, release the read lock and return the cached data.
 		v.domainDataLock.RUnlock()
 		return proto.Clone(val.(proto.Message)).(*ethpb.DomainResponse), nil
 	}
+	// // If not found in the cache, release the read lock.
 	v.domainDataLock.RUnlock()
 
 	// Lock as we are about to perform an expensive request to the beacon node.
@@ -946,12 +951,15 @@ func (v *validator) domainData(ctx context.Context, epoch primitives.Epoch, doma
 		return proto.Clone(val.(proto.Message)).(*ethpb.DomainResponse), nil
 	}
 
+	// Fetch the domain data from the beacon node.
 	res, err := v.validatorClient.DomainData(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	// Store the fetched domain data in the cache for future use.
 	v.domainDataCache.Set(key, proto.Clone(res), 1)
 
+	// Return the fetched domain data.
 	return res, nil
 }
 

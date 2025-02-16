@@ -83,15 +83,19 @@ func ProcessDeposits(
 //	  signature=deposit.data.signature,
 //	 )
 func ProcessDeposit(beaconState state.BeaconState, deposit *ethpb.Deposit, allSignaturesVerified bool) (state.BeaconState, error) {
+	// VerifyDeposit verifies the deposit data and signature given the beacon state and deposit information
 	if err := blocks.VerifyDeposit(beaconState, deposit); err != nil {
 		if deposit == nil || deposit.Data == nil {
 			return nil, err
 		}
 		return nil, errors.Wrapf(err, "could not verify deposit from %#x", bytesutil.Trunc(deposit.Data.PublicKey))
 	}
+	// SetEth1DepositIndex sets eth1DepositIndex field of the beacon state
 	if err := beaconState.SetEth1DepositIndex(beaconState.Eth1DepositIndex() + 1); err != nil {
 		return nil, err
 	}
+
+	// ApplyDeposit adds the incoming deposit as a pending deposit on the state
 	return ApplyDeposit(beaconState, deposit.Data, allSignaturesVerified)
 }
 
@@ -482,13 +486,17 @@ func ApplyPendingDeposit(ctx context.Context, st state.BeaconState, deposit *eth
 //	set_or_append_list(state.current_epoch_participation, index, ParticipationFlags(0b0000_0000))
 //	set_or_append_list(state.inactivity_scores, index, uint64(0))
 func AddValidatorToRegistry(beaconState state.BeaconState, pubKey []byte, withdrawalCredentials []byte, amount uint64) error {
+	// GetValidatorFromDeposit gets a new validator object with provided parameters
 	val, err := GetValidatorFromDeposit(pubKey, withdrawalCredentials, amount)
 	if err != nil {
 		return errors.Wrap(err, "could not get validator from deposit")
 	}
+	// AppendValidator for the beacon state. Appends the new value to the end of list.
 	if err := beaconState.AppendValidator(val); err != nil {
 		return err
 	}
+	// AppendBalance for the beacon state. Appends the new value
+	// to the end of list.
 	if err := beaconState.AppendBalance(amount); err != nil {
 		return err
 	}

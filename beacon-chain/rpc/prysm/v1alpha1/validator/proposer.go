@@ -50,36 +50,51 @@ const (
 func (vs *Server) GetBeaconBlock(ctx context.Context, req *ethpb.BlockRequest) (*ethpb.GenericBeaconBlock, error) {
 	ctx, span := trace.StartSpan(ctx, "ProposerServer.GetBeaconBlock")
 	defer span.End()
+
+	// set the slot attribute as req.slot
 	span.SetAttributes(trace.Int64Attribute("slot", int64(req.Slot)))
 
+	// slots.ToTime converts the slot number to a timestamp based on the genesis time.
 	t, err := slots.ToTime(uint64(vs.TimeFetcher.GenesisTime().Unix()), req.Slot)
 	if err != nil {
 		log.WithError(err).Error("Could not convert slot to time")
 	}
+	// The log includes the slot number and the time elapsed since the slot started.
 	log.WithFields(logrus.Fields{
 		"slot":               req.Slot,
 		"sinceSlotStartTime": time.Since(t),
 	}).Info("Begin building block")
 
-	// A syncing validator should not produce a block.
+	// A syncing node cannot propose blocks because it doesn’t have the latest state.
+	// Syncing returns true if initial sync is still running.
 	if vs.SyncChecker.Syncing() {
 		return nil, status.Error(codes.Unavailable, "Syncing to latest head, not ready to respond")
 	}
 	// An optimistic validator MUST NOT produce a block (i.e., sign across the DOMAIN_BEACON_PROPOSER domain).
 	if slots.ToEpoch(req.Slot) >= params.BeaconConfig().BellatrixForkEpoch {
+		// A node that has not fully verified the chain's current state.
+		// It knows about the latest block (the "head"), but it hasn't confirmed that the 
+		// block and its parent are valid by executing all the required checks.
 		if err := vs.optimisticStatus(ctx); err != nil {
 			return nil, status.Errorf(codes.Unavailable, "Validator is not ready to propose: %v", err)
 		}
 	}
 
+	// fetched the head, parentRoot for the requested slot
+	// getParentState returns the block root to be used as the parent root for the new block.
+	// The parent root ensures the new block is linked to the correct chain.
 	head, parentRoot, err := vs.getParentState(ctx, req.Slot)
 	if err != nil {
 		return nil, err
 	}
+
+	// The function creates an empty block and sets its basic fields 
+	// (slot, graffiti, randao reveal, and parent root).
 	sBlk, err := getEmptyBlock(req.Slot)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "Could not prepare block: %v", err)
 	}
+
 	// Set slot, graffiti, randao reveal, and parent root.
 	sBlk.SetSlot(req.Slot)
 	sBlk.SetGraffiti(req.Graffiti)
@@ -87,17 +102,30 @@ func (vs *Server) GetBeaconBlock(ctx context.Context, req *ethpb.BlockRequest) (
 	sBlk.SetParentRoot(parentRoot[:])
 
 	// Set proposer index.
+	// BeaconProposerIndex calculates the proposer index based on the current state and slot.
+	// The proposer index is included in the block to identify the validator.
 	idx, err := helpers.BeaconProposerIndex(ctx, head)
 	if err != nil {
 		return nil, fmt.Errorf("could not calculate proposer index %w", err)
 	}
 	sBlk.SetProposerIndex(idx)
 
+	// The builder boost factor determines the priority of MEV transactions.
+	// If a custom boost factor is provided in the request, it overrides the default.
+	// MEV stands for "Maximal Extractable Value". It refers to the extra profit 
+	// that blockchain validators can make by strategically ordering, including, 
+	// or excluding transactions in a block.
 	builderBoostFactor := defaultBuilderBoostFactor
 	if req.BuilderBoostFactor != nil {
 		builderBoostFactor = primitives.Gwei(req.BuilderBoostFactor.Value)
 	}
 
+	// BuildBlockParallel is a function that builds a single beacon block efficiently by constructing
+	// different parts of the block at the same time (in parallel).
+	// The function splits the work into two main parallel tasks:
+	// - Building consensus data (attestations, deposits, slashings, etc.)
+	// - Handling execution data (transactions and MEV-related content)
+	// Once both tasks complete, it calculates the final state root and returns the completed block. 
 	resp, err := vs.BuildBlockParallel(ctx, sBlk, head, req.SkipMevBoost, builderBoostFactor)
 	log := log.WithFields(logrus.Fields{
 		"slot":               req.Slot,
@@ -175,9 +203,18 @@ func (vs *Server) getParentStateFromReorgData(ctx context.Context, slot primitiv
 func (vs *Server) getParentState(ctx context.Context, slot primitives.Slot) (state.BeaconState, [32]byte, error) {
 	// process attestations and update head in forkchoice
 	oldHeadRoot := vs.ForkchoiceFetcher.CachedHeadRoot()
+	// UpdateHead updates the canonical head of the chain based on information from fork-choice attestations and votes.
 	vs.ForkchoiceFetcher.UpdateHead(ctx, vs.TimeFetcher.CurrentSlot())
+	// CachedHeadRoot returns the last cached head root
 	headRoot := vs.ForkchoiceFetcher.CachedHeadRoot()
+	// GetProposerHead returns the block root that has to be used as ParentRoot by a
+	// proposer. It may not be the actual head of the canonical chain, in certain
+	// cases it may be its parent, when the last head block has arrived early and is
+	// considered safe to be orphaned.
+	// This function needs to be called only when proposing a block and all
+	// attestation processing has already happened.
 	parentRoot := vs.ForkchoiceFetcher.GetProposerHead()
+	// 
 	head, err := vs.getParentStateFromReorgData(ctx, slot, oldHeadRoot, parentRoot, headRoot)
 	return head, parentRoot, err
 }
@@ -277,12 +314,15 @@ func (vs *Server) ProposeBeaconBlock(ctx context.Context, req *ethpb.GenericSign
 	if req == nil {
 		return nil, status.Errorf(codes.InvalidArgument, "empty request")
 	}
-
+	// - Converts the raw block data (req.Block) into a SignedBeaconBlock object.
+	// - Ensures the block is in the correct format for further processing.
 	block, err := blocks.NewSignedBeaconBlock(req.Block)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%s: %v", "decode block failed", err)
 	}
 
+	// - If the block is blinded, calls vs.handleBlindedBlock to process it and retrieve any associated blob sidecars.
+	// - If the block is unblinded and its version is Deneb or later, calls vs.blobSidecarsFromUnblindedBlock to extract blob sidecars.
 	var sidecars []*ethpb.BlobSidecar
 	if block.IsBlinded() {
 		block, sidecars, err = vs.handleBlindedBlock(ctx, block)
@@ -293,6 +333,8 @@ func (vs *Server) ProposeBeaconBlock(ctx context.Context, req *ethpb.GenericSign
 		return nil, status.Errorf(codes.Internal, "%s: %v", "handle block failed", err)
 	}
 
+	// - Computes the block root (a unique identifier for the block) using HashTreeRoot().
+	// - The block root is used to identify and track the block in the network.
 	root, err := block.Block().HashTreeRoot()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "Could not hash tree root: %v", err)
@@ -301,6 +343,8 @@ func (vs *Server) ProposeBeaconBlock(ctx context.Context, req *ethpb.GenericSign
 	var wg sync.WaitGroup
 	errChan := make(chan error, 1)
 
+	// - Uses a goroutine to broadcast the block to the network asynchronously.
+	// - Ensures the block is propagated to the network efficiently.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -310,16 +354,22 @@ func (vs *Server) ProposeBeaconBlock(ctx context.Context, req *ethpb.GenericSign
 		}
 		errChan <- nil
 	}()
-
+	
+	// Broadcasts any blob sidecars associated with the block.
+	// Ensures all necessary data (e.g., blob sidecars) is propagated to the network.
 	if err := vs.broadcastAndReceiveBlobs(ctx, sidecars, root); err != nil {
 		return nil, status.Errorf(codes.Internal, "Could not broadcast/receive blobs: %v", err)
 	}
 
+	// Waits for the block broadcast goroutine to complete.
+	// Ensures the block is successfully broadcast before proceeding.
 	wg.Wait()
 	if err := <-errChan; err != nil {
 		return nil, status.Errorf(codes.Internal, "Could not broadcast/receive block: %v", err)
 	}
 
+	// Returns a ProposeResponse containing the block root.
+	// The block root is a unique identifier for the block and can be used to track its status.
 	return &ethpb.ProposeResponse{BlockRoot: root[:]}, nil
 }
 
@@ -364,37 +414,69 @@ func (vs *Server) blobSidecarsFromUnblindedBlock(block interfaces.SignedBeaconBl
 
 // broadcastReceiveBlock broadcasts a block and handles its reception.
 func (vs *Server) broadcastReceiveBlock(ctx context.Context, block interfaces.SignedBeaconBlock, root [32]byte) error {
+	// The function first converts the block into a protobuf format, which is a standard way to 
+	// serialize data for network communication.
 	protoBlock, err := block.Proto()
 	if err != nil {
 		return errors.Wrap(err, "protobuf conversion failed")
 	}
+	// Broadcast a message to the p2p network, the message is assumed to be
+	// broadcasted to the current fork.
+	// The function broadcasts the block to the peer-to-peer (P2P) network so other nodes can receive it.
 	if err := vs.P2P.Broadcast(ctx, protoBlock); err != nil {
 		return errors.Wrap(err, "broadcast failed")
 	}
+	// Send delivers to all subscribed channels simultaneously.
+	// It returns the number of subscribers that the value was sent to.
+	// - The function notifies any subscribers (e.g., other components in the system) 
+	// that a new block has been received.
 	vs.BlockNotifier.BlockFeed().Send(&feed.Event{
 		Type: blockfeed.ReceivedBlock,
 		Data: &blockfeed.ReceivedBlockData{SignedBlock: block},
 	})
+	// ReceiveBlock is a function that defines the operations (minus pubsub)
+	// that are performed on a received block. The operations consist of:
+	//  1. Validate block, apply state transition and update checkpoints
+	//  2. Apply fork choice to the processed block
+	//  3. Save latest head info
+	// - The function processes the received block by validating it, applying state transitions, 
+	// updating checkpoints, and saving the latest head info.
 	return vs.BlockReceiver.ReceiveBlock(ctx, block, root, nil)
 }
 
 // broadcastAndReceiveBlobs handles the broadcasting and reception of blob sidecars.
 func (vs *Server) broadcastAndReceiveBlobs(ctx context.Context, sidecars []*ethpb.BlobSidecar, root [32]byte) error {
+	// Creates an error group (eg) and a context (eCtx) tied to the error group.
+	// The error group allows multiple goroutines to run concurrently and handles errors from any of them.
+	// Enables concurrent broadcasting and receiving of blob sidecars.
 	eg, eCtx := errgroup.WithContext(ctx)
 	for i, sc := range sidecars {
 		// Copy the iteration instance to a local variable to give each go-routine its own copy to play with.
 		// See https://golang.org/doc/faq#closures_and_goroutines for more details.
+
+		// For each blob sidecar, it:
+		// - Captures the index (subIdx) and the blob sidecar (sCar) in local variables to avoid race conditions.
+		// - Spawns a new goroutine to handle the broadcasting and receiving of the blob sidecar.
+		// - Ensures each blob sidecar is processed concurrently.
 		subIdx := i
 		sCar := sc
 		eg.Go(func() error {
+			// BroadcastBlob broadcasts a blob to the p2p network, the message is assumed to be
+			// broadcasted to the current fork and to the input subnet.
+			// Ensures the blob sidecar is propagated to other nodes in the network.
 			if err := vs.P2P.BroadcastBlob(eCtx, uint64(subIdx), sCar); err != nil {
 				return errors.Wrap(err, "broadcast blob failed")
 			}
+			// Creates a read-only blob (readOnlySc) from the blob sidecar and the block root.
+			// Ensures the blob sidecar is in the correct format for further processing.
 			readOnlySc, err := blocks.NewROBlobWithRoot(sCar, root)
 			if err != nil {
 				return errors.Wrap(err, "ROBlob creation failed")
 			}
+			// Creates a verified read-only blob (verifiedBlob) from the read-only blob.
+			// Ensures the blob sidecar has been verified and is ready for processing.
 			verifiedBlob := blocks.NewVerifiedROBlob(readOnlySc)
+			// ReceiveBlob saves the blob to database and sends the new event
 			if err := vs.BlobReceiver.ReceiveBlob(ctx, verifiedBlob); err != nil {
 				return errors.Wrap(err, "receive blob failed")
 			}
@@ -405,6 +487,8 @@ func (vs *Server) broadcastAndReceiveBlobs(ctx context.Context, sidecars []*ethp
 			return nil
 		})
 	}
+	// Waits for all goroutines in the error group to complete.
+	// Ensures all blob sidecars are processed before the function exits.
 	return eg.Wait()
 }
 

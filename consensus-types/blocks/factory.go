@@ -88,6 +88,10 @@ func NewSignedBeaconBlock(i interface{}) (interfaces.SignedBeaconBlock, error) {
 }
 
 // NewBeaconBlock creates a beacon block from a protobuf beacon block.
+// - The NewBeaconBlock function takes a protobuf beacon block (a block in a specific format used for communication)
+// and converts it into a read-only beacon block (a block that can be used by the blockchain software but cannot be modified).
+// - In other words, it takes a block in one format (protobuf) and turns it into a format that the blockchain 
+// software can understand and work with.
 func NewBeaconBlock(i interface{}) (interfaces.ReadOnlyBeaconBlock, error) {
 	switch b := i.(type) {
 	case nil:
