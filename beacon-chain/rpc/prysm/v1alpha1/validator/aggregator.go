@@ -25,6 +25,9 @@ func (vs *Server) SubmitAggregateSelectionProof(ctx context.Context, req *ethpb.
 	defer span.End()
 	span.SetAttributes(trace.Int64Attribute("slot", int64(req.Slot)))
 
+	// The function checks several conditions: the node must be synced, the validator must exist
+	// and be active, and most importantly, the validator must be randomly selected as an aggregator their signature.
+	// If all checks pass, the function returns the validator's index and validator's index in committee.
 	indexInCommittee, validatorIndex, err := vs.processAggregateSelection(ctx, req)
 	if err != nil {
 		return nil, err
@@ -33,17 +36,30 @@ func (vs *Server) SubmitAggregateSelectionProof(ctx context.Context, req *ethpb.
 	var atts []*ethpb.Attestation
 
 	if features.Get().EnableExperimentalAttestationPool {
+		// GetBySlotAndCommitteeIndex returns all attestations in the cache that match the provided slot
+		// and committee index. Forkchoice attestations are not returned.
 		atts = cache.GetBySlotAndCommitteeIndex[*ethpb.Attestation](vs.AttestationCache, req.Slot, req.CommitteeIndex)
 	} else {
+		// AggregatedAttestationsBySlotIndex returns the aggregated attestations in cache,
+		// filtered by committee index and slot.
 		atts = vs.AttPool.AggregatedAttestationsBySlotIndex(ctx, req.Slot, req.CommitteeIndex)
 		if len(atts) == 0 {
+			// UnaggregatedAttestationsBySlotIndex returns the unaggregated attestations in cache,
+			// filtered by committee index and slot.
 			atts = vs.AttPool.UnaggregatedAttestationsBySlotIndex(ctx, req.Slot, req.CommitteeIndex)
 		}
 	}
 	if len(atts) == 0 {
 		return nil, status.Errorf(codes.NotFound, "Could not find attestation for slot and committee in pool")
 	}
-
+	// bestAggregate function finds the best attestation from a list of attestations. It has two main priorities:
+	// - First Priority: It looks for attestations that contain the validator's own signature (using BitAt)
+	// and has the most votes (using Count)
+	// - Second Priority: If it can't find an attestation with the validator's signature, it simply picks
+	// the one with the most votes
+	// - Think of it like picking the best group attendance sheet: first try to find a sheet that has your own
+	// signature and the most people signed in, but if you can't find one with your signature, just take the
+	// sheet with the most signatures overall.
 	best := bestAggregate(atts, req.CommitteeIndex, indexInCommittee)
 	attAndProof := &ethpb.AggregateAttestationAndProof{
 		Aggregate:       best,
@@ -64,6 +80,9 @@ func (vs *Server) SubmitAggregateSelectionProofElectra(
 	defer span.End()
 	span.SetAttributes(trace.Int64Attribute("slot", int64(req.Slot)))
 
+	// The function checks several conditions: the node must be synced, the validator must exist
+	// and be active, and most importantly, the validator must be randomly selected as an aggregator their signature.
+	// If all checks pass, the function returns the validator's index and validator's index in committee.
 	indexInCommittee, validatorIndex, err := vs.processAggregateSelection(ctx, req)
 	if err != nil {
 		return nil, err
@@ -72,17 +91,30 @@ func (vs *Server) SubmitAggregateSelectionProofElectra(
 	var atts []*ethpb.AttestationElectra
 
 	if features.Get().EnableExperimentalAttestationPool {
+		// GetBySlotAndCommitteeIndex returns all attestations in the cache that match the provided slot
+		// and committee index. Forkchoice attestations are not returned.
 		atts = cache.GetBySlotAndCommitteeIndex[*ethpb.AttestationElectra](vs.AttestationCache, req.Slot, req.CommitteeIndex)
 	} else {
+		// AggregatedAttestationsBySlotIndexElectra returns the aggregated attestations in cache,
+		// filtered by committee index and slot.
 		atts = vs.AttPool.AggregatedAttestationsBySlotIndexElectra(ctx, req.Slot, req.CommitteeIndex)
 		if len(atts) == 0 {
+			// UnaggregatedAttestationsBySlotIndexElectra returns the unaggregated attestations in cache,
+			// filtered by committee index and slot.
 			atts = vs.AttPool.UnaggregatedAttestationsBySlotIndexElectra(ctx, req.Slot, req.CommitteeIndex)
 		}
 	}
 	if len(atts) == 0 {
 		return nil, status.Errorf(codes.NotFound, "Could not find attestation for slot and committee in pool")
 	}
-
+	// bestAggregate function finds the best attestation from a list of attestations. It has two main priorities:
+	// - First Priority: It looks for attestations that contain the validator's own signature (using BitAt)
+	// and has the most votes (using Count)
+	// - Second Priority: If it can't find an attestation with the validator's signature, it simply picks
+	// the one with the most votes
+	// - Think of it like picking the best group attendance sheet: first try to find a sheet that has your own
+	//  signature and the most people signed in, but if you can't find one with your signature, just take the
+	// sheet with the most signatures overall.
 	best := bestAggregate(atts, req.CommitteeIndex, indexInCommittee)
 	attAndProof := &ethpb.AggregateAttestationAndProofElectra{
 		Aggregate:       best,
@@ -102,17 +134,24 @@ func (vs *Server) processAggregateSelection(ctx context.Context, req *ethpb.Aggr
 	if err := vs.optimisticStatus(ctx); err != nil {
 		return 0, 0, err
 	}
-
+	// HeadStateReadOnly returns the read only head state of the chain.
+	// If the head is nil from service struct, it will attempt to get the
+	// head state from DB. Any callers of this method MUST only use the
+	// state instance to read fields from the state. Any type assertions back
+	// to the concrete type and subsequent use of it could lead to corruption
+	// of the state.
 	st, err := vs.HeadFetcher.HeadStateReadOnly(ctx)
 	if err != nil {
 		return 0, 0, status.Errorf(codes.Internal, "Could not determine head state: %v", err)
 	}
 
+	// ValidatorIndexByPubkey returns a given validator by its 48-byte public key.
 	validatorIndex, exists := st.ValidatorIndexByPubkey(bytesutil.ToBytes48(req.PublicKey))
 	if !exists {
 		return 0, 0, status.Error(codes.Internal, "Could not locate validator index in DB")
 	}
 
+	//
 	epoch := slots.ToEpoch(req.Slot)
 	activeValidatorIndices, err := helpers.ActiveValidatorIndices(ctx, st, epoch)
 	if err != nil {
@@ -127,7 +166,9 @@ func (vs *Server) processAggregateSelection(ctx context.Context, req *ethpb.Aggr
 		return 0, 0, err
 	}
 
-	// Check if the validator is an aggregator
+	// IsAggregator returns true if the signature is from the input validator. The committee
+	// count is provided as an argument rather than imported implementation from spec. Having
+	// committee count as an argument allows cheaper computation at run time.
 	isAggregator, err := helpers.IsAggregator(uint64(len(committee)), req.SlotSignature)
 	if err != nil {
 		return 0, 0, status.Errorf(codes.Internal, "Could not get aggregator status: %v", err)
@@ -169,12 +210,24 @@ func (vs *Server) SubmitSignedAggregateSelectionProofElectra(
 	return &ethpb.SignedAggregateSubmitResponse{}, nil
 }
 
+// bestAggregate function finds the best attestation from a list of attestations. It has two main priorities:
+// - First Priority: It looks for attestations that contain the validator's own signature (using BitAt)
+// and has the most votes (using Count)
+// - Second Priority: If it can't find an attestation with the validator's signature, it simply picks
+// the one with the most votes
+//   - Think of it like picking the best group attendance sheet: first try to find a sheet that has your own
+//     signature and the most people signed in, but if you can't find one with your signature, just take the
+//
+// sheet with the most signatures overall.
 func bestAggregate[T ethpb.Att](atts []T, committeeIndex primitives.CommitteeIndex, indexInCommittee uint64) T {
 	best := atts[0]
 	for _, a := range atts[1:] {
 		// The aggregator should prefer an attestation that they have signed. We check this by
 		// looking at the attestation's committee index against the validator's committee index
 		// and check the aggregate bits to ensure the validator's index is set.
+
+		// - BitAt returns true if the bit at the given index is 1.
+		// - Count returns the number of 1s in the bitfield.
 		if a.CommitteeBitsVal().BitAt(uint64(committeeIndex)) &&
 			a.GetAggregationBits().BitAt(indexInCommittee) &&
 			(!best.GetAggregationBits().BitAt(indexInCommittee) ||

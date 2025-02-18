@@ -239,7 +239,7 @@ func performRoles(slotCtx context.Context, allRoles map[[48]byte][]iface.Validat
 				// RoleProposer means that the validator should propose a block.
 				case iface.RoleProposer:
 					v.ProposeBlock(slotCtx, slot, pubKey)
-				// RoleAggregator means that the validator should submit an aggregation and proof.
+				// RoleAggregator means that the validator should 	submit an aggregation and proof.
 				case iface.RoleAggregator:
 					v.SubmitAggregateAndProof(slotCtx, slot, pubKey)
 				// RoleSyncCommittee means that the validator should submit a sync committee message.

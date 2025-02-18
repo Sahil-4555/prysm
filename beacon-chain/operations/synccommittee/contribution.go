@@ -13,8 +13,11 @@ import (
 // This account for previous slot, current slot, two future slots.
 const syncCommitteeMaxQueueSize = 4
 
-// SaveSyncCommitteeContribution saves a sync committee contribution in to a priority queue.
-// The priority queue is capped at syncCommitteeMaxQueueSize contributions.
+// SaveSyncCommitteeContribution stores a sync committee contribution in a priority queue.
+// The queue has a maximum size of 4 slots to handle:
+// - Previous slot
+// - Current slot
+// - Two future slots (tolerance for early arrivals)
 func (s *Store) SaveSyncCommitteeContribution(cont *ethpb.SyncCommitteeContribution) error {
 	if cont == nil {
 		return errNilContribution
@@ -22,23 +25,28 @@ func (s *Store) SaveSyncCommitteeContribution(cont *ethpb.SyncCommitteeContribut
 
 	s.contributionLock.Lock()
 	defer s.contributionLock.Unlock()
-
+	// PopByKey searches the queue for an item with the given key and removes it
+	// from the queue if found. Returns nil if not found. This method must fix the
+	// queue after removing any key.
 	item, err := s.contributionCache.PopByKey(syncCommitteeKey(cont.Slot))
 	if err != nil {
 		return err
 	}
-
+	// CopySyncCommitteeContribution copies the provided sync committee contribution object.
 	copied := ethpb.CopySyncCommitteeContribution(cont)
 
 	// Contributions exist in the queue. Append instead of insert new.
 	if item != nil {
+		// Get existing contributions array
 		contributions, ok := item.Value.([]*ethpb.SyncCommitteeContribution)
 		if !ok {
 			return errors.New("not typed []ethpb.SyncCommitteeContribution")
 		}
-
+		// Add new contribution to existing array
 		contributions = append(contributions, copied)
+		// Update metrics counter
 		savedSyncCommitteeContributionTotal.Inc()
+		// Store updated array back in cache
 		return s.contributionCache.Push(&queue.Item{
 			Key:      syncCommitteeKey(cont.Slot),
 			Value:    contributions,
@@ -56,7 +64,7 @@ func (s *Store) SaveSyncCommitteeContribution(cont *ethpb.SyncCommitteeContribut
 	}
 	savedSyncCommitteeContributionTotal.Inc()
 
-	// Trim contributions in queue down to syncCommitteeMaxQueueSize.
+	// Maintain queue size limit by removing oldest item if needed
 	if s.contributionCache.Len() > syncCommitteeMaxQueueSize {
 		if _, err := s.contributionCache.Pop(); err != nil {
 			return err

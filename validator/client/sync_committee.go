@@ -25,13 +25,24 @@ import (
 )
 
 // SubmitSyncCommitteeMessage submits the sync committee message to the beacon chain.
+//   - A sync committee validator is responsible for signing and submitting sync committee messages
+//     to help light clients follow the blockchain without downloading full blocks.
+//
+// - Sync committee validators earn higher rewards per signature than regular attestation rewards because their role is crucial for light clients.
+// - Every ~27 hours (every 256 epochs), 512 validators are randomly selected to form a sync committee.
+// - These 512 validators perform the role for 256 epochs (~27 hours) before a new committee is chosen.
 func (v *validator) SubmitSyncCommitteeMessage(ctx context.Context, slot primitives.Slot, pubKey [fieldparams.BLSPubkeyLength]byte) {
 	ctx, span := trace.StartSpan(ctx, "validator.SubmitSyncCommitteeMessage")
 	defer span.End()
 	span.SetAttributes(trace.StringAttribute("validator", fmt.Sprintf("%#x", pubKey)))
 
+	// The validator waits until one of two conditions is met:
+	// - One-third of the slot time has passed.
+	// - A valid block for the slot has been received.
 	v.waitOneThirdOrValidBlock(ctx, slot)
 
+	// GetSyncMessageBlockRoot retrieves the sync committee block root of the beacon chain.
+	// beacon-chain/rpc/prysm/v1alpha1/validator/sync_committee.go
 	res, err := v.validatorClient.SyncMessageBlockRoot(ctx, &emptypb.Empty{})
 	if err != nil {
 		log.WithError(err).Error("Could not request sync message block root to sign")
@@ -39,24 +50,30 @@ func (v *validator) SubmitSyncCommitteeMessage(ctx context.Context, slot primiti
 		return
 	}
 
+	// Given the validator public key, this gets the validator assignment
 	duty, err := v.duty(pubKey)
 	if err != nil {
 		log.WithError(err).Error("Could not fetch validator assignment")
 		return
 	}
 
+	// to get the domain for the attestation. The domain is a unique identifier for the attestation
+	// A domain is a unique identifier that ensures data (like attestations or blocks) is only valid
+	// for a specific purpose, fork, or epoch. It prevents data from being misused or replayed in the wrong context.
 	d, err := v.domainData(ctx, slots.ToEpoch(slot), params.BeaconConfig().DomainSyncCommittee[:])
 	if err != nil {
 		log.WithError(err).Error("Could not get sync committee domain data")
 		return
 	}
 	sszRoot := primitives.SSZBytes(res.Root)
+	// ComputeSigningRoot computes the root of the object by calculating the hash tree root of the signing data with the given domain.
 	r, err := signing.ComputeSigningRoot(&sszRoot, d.SignatureDomain)
 	if err != nil {
 		log.WithError(err).Error("Could not get sync committee message signing root")
 		return
 	}
-
+	// Sign signs a message using a validator key.
+	// validator/keymanager/local/keymanager.go
 	sig, err := v.km.Sign(ctx, &validatorpb.SignRequest{
 		PublicKey:       pubKey[:],
 		SigningRoot:     r[:],
@@ -77,6 +94,8 @@ func (v *validator) SubmitSyncCommitteeMessage(ctx context.Context, slot primiti
 		ValidatorIndex: duty.ValidatorIndex,
 		Signature:      sig.Marshal(),
 	}
+	// SubmitSyncMessage submits the sync committee message to the network.
+	// It also saves the sync committee message into the pending pool for block inclusion.
 	if _, err := v.validatorClient.SubmitSyncMessage(ctx, msg); err != nil {
 		log.WithError(err).Error("Could not submit sync committee message")
 		return

@@ -339,6 +339,8 @@ func (s *Service) IndividualVotes(
 
 // SubmitSignedContributionAndProof is called by a sync committee aggregator
 // to submit signed contribution and proof object.
+// A sync committee aggregator is responsible for aggregating sync committee messages from validators
+// and submitting them to the network as a signed contribution and proof.
 func (s *Service) SubmitSignedContributionAndProof(
 	ctx context.Context,
 	req *ethpb.SignedContributionAndProof,
@@ -353,6 +355,11 @@ func (s *Service) SubmitSignedContributionAndProof(
 		return s.Broadcaster.Broadcast(ctx, req)
 	})
 
+	// SaveSyncCommitteeContribution stores a sync committee contribution in a priority queue.
+	// The queue has a maximum size of 4 slots to handle:
+	// - Previous slot
+	// - Current slot
+	// - Two future slots (tolerance for early arrivals)
 	if err := s.SyncCommitteePool.SaveSyncCommitteeContribution(req.Message.Contribution); err != nil {
 		return &RpcError{Err: err, Reason: Internal}
 	}
@@ -363,6 +370,7 @@ func (s *Service) SubmitSignedContributionAndProof(
 		return &RpcError{Err: err, Reason: Internal}
 	}
 
+	// Sends a notification to the operation feed that a new sync committee contribution has been received.
 	s.OperationNotifier.OperationFeed().Send(&feed.Event{
 		Type: opfeed.SyncCommitteeContributionReceived,
 		Data: &opfeed.SyncCommitteeContributionReceivedData{
@@ -393,6 +401,9 @@ func (s *Service) SubmitSignedAggregateSelectionProof(
 	}
 
 	// As a preventive measure, a beacon node shouldn't broadcast an attestation whose slot is out of range.
+	// - ValidateAttestationTime Validates that the incoming attestation is in the desired time range.
+	// An attestation is valid only if received within the last ATTESTATION_PROPAGATION_SLOT_RANGE
+	// slots.
 	if err := helpers.ValidateAttestationTime(
 		data.Slot,
 		s.GenesisTimeFetcher.GenesisTime(),
@@ -401,6 +412,8 @@ func (s *Service) SubmitSignedAggregateSelectionProof(
 		return &RpcError{Err: errors.New("attestation slot is no longer valid from current time"), Reason: BadRequest}
 	}
 
+	// Broadcast a message to the p2p network, the message is assumed to be
+	// broadcasted to the current fork.
 	if err := s.Broadcaster.Broadcast(ctx, agg); err != nil {
 		return &RpcError{Err: &AggregateBroadcastFailedError{err: err}, Reason: Internal}
 	}

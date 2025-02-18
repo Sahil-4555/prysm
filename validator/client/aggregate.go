@@ -28,6 +28,9 @@ import (
 // via gRPC. Beacon node will verify the slot signature and determine if the validator is also
 // an aggregator. If yes, then beacon node will broadcast aggregated signature and
 // proof on the validator's behalf.
+//   - An aggregator is a validator selected to aggregate attestations from multiple validators
+//     in the same committee and submit them as a single aggregated attestation. This reduces network
+//     overhead and improves efficiency.
 func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives.Slot, pubKey [fieldparams.BLSPubkeyLength]byte) {
 	ctx, span := trace.StartSpan(ctx, "validator.SubmitAggregateAndProof")
 	defer span.End()
@@ -35,6 +38,8 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 	span.SetAttributes(trace.StringAttribute("validator", fmt.Sprintf("%#x", pubKey)))
 	fmtKey := fmt.Sprintf("%#x", pubKey[:])
 
+	// Given the validator public key, this gets the validator assignment.
+	// - Fetches the validator’s duty for the slot, which includes its committee index and validator index.
 	duty, err := v.duty(pubKey)
 	if err != nil {
 		log.WithError(err).Error("Could not fetch validator assignment")
@@ -45,17 +50,36 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 	}
 
 	// Avoid sending beacon node duplicated aggregation requests.
+	// - A unique key (k) is created using the slot and committee index.
+	// - This key represents the validator’s subscription to a specific subnet
+	// (a subset of the network) for the given slot and committee.
 	k := validatorSubnetSubscriptionKey(slot, duty.CommitteeIndex)
 	v.aggregatedSlotCommitteeIDCacheLock.Lock()
+	// checks if the key (k) already exists in the cache.
 	if v.aggregatedSlotCommitteeIDCache.Contains(k) {
+		// If the key exists, it means the validator has already sent an aggregation request
+		// for this slot and committee, so it skips the request and exits.
 		v.aggregatedSlotCommitteeIDCacheLock.Unlock()
 		return
 	}
+	// If the key does not exist in the cache, it adds the key to the cache.
+	// This ensures that future requests for the same slot and committee will be skipped.
 	v.aggregatedSlotCommitteeIDCache.Add(k, true)
 	v.aggregatedSlotCommitteeIDCacheLock.Unlock()
 
 	var slotSig []byte
+	// v.distributed === true
+	// The validator is part of a distributed system, where the private keys used for signing
+	// are managed by an external Distributed Key Management System (DKMS). In this setup:
+	// - The validator does not have direct access to its private key.
+	// - Instead, it requests signatures from the DKMS whenever it needs to sign data
+	// (e.g., attestations, blocks, or aggregation proofs).
+	// v.distributed === false
+	// The validator operates in a local setup, where the private key is stored locally on the validator’s machine. In this setup:
+	// - The validator has direct access to its private key.
+	// - It can sign data locally without needing to communicate with an external system.
 	if v.distributed {
+		// Request the signature from the distributed key management system (DKMS).
 		slotSig, err = v.attSelection(attSelectionKey{slot: slot, index: duty.ValidatorIndex})
 		if err != nil {
 			log.WithError(err).Error("Could not find aggregated selection proof")
@@ -65,6 +89,7 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 			return
 		}
 	} else {
+		// Signs input slot with domain selection proof. This is used to create the signature for aggregator selection.
 		slotSig, err = v.signSlotWithSelectionProof(ctx, pubKey, slot)
 		if err != nil {
 			log.WithError(err).Error("Could not sign slot")
@@ -91,6 +116,8 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 	// TODO: look at renaming SubmitAggregateSelectionProof functions as they are GET beacon API
 	var agg ethpb.AggregateAttAndProof
 	if postElectra {
+		// A validator acting as an aggregator submits a selection proof to receive an aggregated
+		// attestation for signing. (beacon-chain/rpc/prysm/v1alpha1/validator/aggregator.go)
 		res, err := v.validatorClient.SubmitAggregateSelectionProofElectra(ctx, aggSelectionRequest, duty.ValidatorIndex, uint64(len(duty.Committee)))
 		if err != nil {
 			v.handleSubmitAggSelectionProofError(err, slot, fmtKey)
@@ -98,6 +125,8 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 		}
 		agg = res.AggregateAndProof
 	} else {
+		// A validator acting as an aggregator submits a selection proof to receive an aggregated
+		// attestation for signing. (beacon-chain/rpc/prysm/v1alpha1/validator/aggregator.go)
 		res, err := v.validatorClient.SubmitAggregateSelectionProof(ctx, aggSelectionRequest, duty.ValidatorIndex, uint64(len(duty.Committee)))
 		if err != nil {
 			v.handleSubmitAggSelectionProofError(err, slot, fmtKey)
@@ -106,6 +135,8 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 		agg = res.AggregateAndProof
 	}
 
+	// This returns the signature of validator signing over aggregate and
+	// proof object.
 	sig, err := v.aggregateAndProofSig(ctx, pubKey, agg, slot)
 	if err != nil {
 		log.WithError(err).Error("Could not sign aggregate and proof")
@@ -121,6 +152,8 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 			}
 			return
 		}
+		// SubmitSignedAggregateSelectionProof verifies given aggregate and proofs and publishes them on appropriate gossipsub topic.
+		// beacon-chain/rpc/core/validator.go
 		_, err = v.validatorClient.SubmitSignedAggregateSelectionProofElectra(ctx, &ethpb.SignedAggregateSubmitElectraRequest{
 			SignedAggregateAndProof: &ethpb.SignedAggregateAttestationAndProofElectra{
 				Message:   msg,
@@ -143,6 +176,8 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 			}
 			return
 		}
+
+		// SubmitSignedAggregateSelectionProof verifies given aggregate and proofs and publishes them on appropriate gossipsub topic.
 		_, err = v.validatorClient.SubmitSignedAggregateSelectionProof(ctx, &ethpb.SignedAggregateSubmitRequest{
 			SignedAggregateAndProof: &ethpb.SignedAggregateAttestationAndProof{
 				Message:   msg,
@@ -158,6 +193,8 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 		}
 	}
 
+	// saveSubmittedAtt saves the submitted attestation data along with the attester's pubkey.
+	// The purpose of this is to display combined attesting logs for all keys managed by the validator client.
 	if err := v.saveSubmittedAtt(agg.AggregateVal().GetData(), pubKey[:], true); err != nil {
 		log.WithError(err).Error("Could not add aggregator indices to logs")
 		if v.emitAccountMetrics {
@@ -234,10 +271,13 @@ func (v *validator) aggregateAndProofSig(ctx context.Context, pubKey [fieldparam
 	ctx, span := trace.StartSpan(ctx, "validator.aggregateAndProofSig")
 	defer span.End()
 
+	// Fetches the domain data for the aggregate and proof object.
+	// The domain is a unique identifier that ensures the signature is valid for the specific context (e.g., fork version, epoch).
 	d, err := v.domainData(ctx, slots.ToEpoch(agg.AggregateVal().GetData().Slot), params.BeaconConfig().DomainAggregateAndProof[:])
 	if err != nil {
 		return nil, err
 	}
+	// Computes the signing root, which is a hash of the aggregate and proof object combined with the domain.
 	root, err := signing.ComputeSigningRoot(agg, d.SignatureDomain)
 	if err != nil {
 		return nil, err
@@ -263,11 +303,14 @@ func (v *validator) aggregateAndProofSig(ctx context.Context, pubKey [fieldparam
 		signRequest.Object = &validatorpb.SignRequest_AggregateAttestationAndProof{AggregateAttestationAndProof: aggregate}
 	}
 
+	// Sign signs a message using a validator key.
+	// validator/keymanager/local/keymanager.go
 	sig, err := v.km.Sign(ctx, signRequest)
 	if err != nil {
 		return nil, err
 	}
 
+	//Converts the signature into a byte array and returns it.
 	return sig.Marshal(), nil
 }
 
