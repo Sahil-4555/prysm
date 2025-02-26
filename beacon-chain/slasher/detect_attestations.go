@@ -21,9 +21,11 @@ import (
 func (s *Service) checkSlashableAttestations(
 	ctx context.Context, currentEpoch primitives.Epoch, atts []*slashertypes.IndexedAttestationWrapper,
 ) (map[[fieldparams.RootLength]byte]ethpb.AttSlashing, error) {
+	// Initializes an empty map to store any slashable attestations that are found.
 	slashings := map[[fieldparams.RootLength]byte]ethpb.AttSlashing{}
 
 	// Double votes
+	// Check for double votes in our database given a list of incoming attestations.
 	doubleVoteSlashings, err := s.checkDoubleVotes(ctx, atts)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not check slashable double votes")
@@ -33,9 +35,8 @@ func (s *Service) checkSlashableAttestations(
 		slashings[root] = slashing
 	}
 
-	// Save the attestation records to our database.
-	// If multiple attestations are provided for the same validator index + target epoch combination,
-	// then the first (validator index + target epoch) => signing root) link is kept into the database.
+	// Saves the attestation records to the database.
+	// If multiple attestations exist for the same validator and target epoch, only the first one is saved.
 	if err := s.serviceCfg.Database.SaveAttestationRecordsForValidators(ctx, atts); err != nil {
 		return nil, errors.Wrap(err, couldNotSaveAttRecord)
 	}
@@ -62,36 +63,61 @@ func (s *Service) checkSurroundVotes(
 	// With 256 validators and 16 epochs per chunk, there is 4096 `uint16` elements per chunk.
 	// 4096 `uint16` elements = 8192 bytes = 8KB
 	// 25_600 chunks * 8KB = 200MB
+	// maxChunkBeforeFlush to limit the number of chunks processed in memory before flushing them to disk.
 	const maxChunkBeforeFlush = 25_600
 
 	slashings := map[[fieldparams.RootLength]byte]ethpb.AttSlashing{}
 
-	// Group attestation wrappers by validator chunk index.
+	// Group a list of attestations into batches by validator chunk index.
+	// This way, we can detect on the batch of attestations for each validator chunk index
+	// concurrently, and also allowing us to effectively use a single 2D chunk
+	// for slashing detection through this logical grouping.
+	// Step 1: After grouping by validator chunk index
+	/*
+		attWrappersByValidatorChunkIndex := {
+		    0: [attestation1, attestation2], // chunk for validators 0-15
+		    1: [attestation3]                // chunk for validators 16-31
+	}*/
 	attWrappersByValidatorChunkIndex := s.groupByValidatorChunkIndex(attWrappers)
+	// Counts the number of validator chunk indices.
 	attWrappersByValidatorChunkIndexCount := len(attWrappersByValidatorChunkIndex)
 
+	// Stores the earliest epoch number that a group of validators has attested to, used to detect if new attestations illegally overlap with past ones.
 	minChunkByChunkIndexByValidatorChunkIndex := make(map[uint64]map[uint64]Chunker, attWrappersByValidatorChunkIndexCount)
+	// Stores the latest epoch number that a group of validators has attested to, used to detect if new attestations illegally overlap with past ones.
 	maxChunkByChunkIndexByValidatorChunkIndex := make(map[uint64]map[uint64]Chunker, attWrappersByValidatorChunkIndexCount)
 
 	chunksCounts := 0
 
 	for validatorChunkIndex, attWrappers := range attWrappersByValidatorChunkIndex {
+		// Updates the min chunks (used to detect surrounding votes) for the current validator chunk index.
+		// Ensures the min chunks are up-to-date for slashing detection.
 		minChunkByChunkIndex, err := s.updatedChunkByChunkIndex(ctx, slashertypes.MinSpan, currentEpoch, validatorChunkIndex)
 		if err != nil {
 			return nil, errors.Wrap(err, "could not update updatedMinChunks")
 		}
-
+		// Updates the max chunks (used to detect surrounded votes) for the current validator chunk index.
+		// Ensures the max chunks are up-to-date for slashing detection.
 		maxChunkByChunkIndex, err := s.updatedChunkByChunkIndex(ctx, slashertypes.MaxSpan, currentEpoch, validatorChunkIndex)
 		if err != nil {
 			return nil, errors.Wrap(err, "could not update updatedMaxChunks")
 		}
-
+		// Tracks the total number of chunks processed to determine when to flush to disk.
 		chunksCounts += len(minChunkByChunkIndex) + len(maxChunkByChunkIndex)
 
-		// Group (already grouped by validator chunk index) attestation wrappers by chunk index.
+		// Groups the attestations by chunk index (a way to organize attestations into manageable groups).
+		// Group attestations by the chunk index their source epoch corresponds to.
 		attWrappersByChunkIndex := s.groupByChunkIndex(attWrappers)
 
-		// Check for surrounding votes.
+		// Check for surrounded votes.
+		// Updates spans and detects any slashable attester offenses along the way.
+		//  1. Determine the chunks we need to use for updating for the validator indices
+		//     in a validator chunk index, then retrieve those chunks from the database.
+		//  2. Using the chunks from step (1):
+		//     for every attestation by chunk index:
+		//     for each validator in the attestation's attesting indices:
+		//     - Check if the attestation is slashable, if so return a slashing object.
+		//  3. Save the updated chunks to disk.
 		surroundingSlashings, err := s.updateSpans(ctx, minChunkByChunkIndex, attWrappersByChunkIndex, slashertypes.MinSpan, validatorChunkIndex, currentEpoch)
 		if err != nil {
 			return nil, errors.Wrapf(err, "could not update min attestation spans for validator chunk index %d", validatorChunkIndex)
@@ -100,8 +126,15 @@ func (s *Service) checkSurroundVotes(
 		for root, slashing := range surroundingSlashings {
 			slashings[root] = slashing
 		}
-
 		// Check for surrounded votes.
+		// Updates spans and detects any slashable attester offenses along the way.
+		//  1. Determine the chunks we need to use for updating for the validator indices
+		//     in a validator chunk index, then retrieve those chunks from the database.
+		//  2. Using the chunks from step (1):
+		//     for every attestation by chunk index:
+		//     for each validator in the attestation's attesting indices:
+		//     - Check if the attestation is slashable, if so return a slashing object.
+		//  3. Save the updated chunks to disk.
 		surroundedSlashings, err := s.updateSpans(ctx, maxChunkByChunkIndex, attWrappersByChunkIndex, slashertypes.MaxSpan, validatorChunkIndex, currentEpoch)
 		if err != nil {
 			return nil, errors.Wrapf(err, "could not update max attestation spans for validator chunk index %d", validatorChunkIndex)
@@ -153,6 +186,11 @@ func (s *Service) checkSurroundVotes(
 }
 
 // Check for double votes in our database given a list of incoming attestations.
+// The `checkDoubleVotes` function detects double voting, where a validator submits multiple
+// attestations for the same epoch with different data roots, violating consensus rules. It tracks
+// incoming attestations, checks for conflicts, and records slashing evidence. It also verifies past
+// attestations from the database, handles pre- and post-Electra versions, calculates unique hashes,
+// and returns detected slashing cases.
 func (s *Service) checkDoubleVotes(
 	ctx context.Context, incomingAttWrappers []*slashertypes.IndexedAttestationWrapper,
 ) (map[[fieldparams.RootLength]byte]ethpb.AttSlashing, error) {
@@ -164,20 +202,27 @@ func (s *Service) checkDoubleVotes(
 		epoch          primitives.Epoch
 	}
 
+	// Initialize map to store discovered slashing evidence
 	slashings := map[[fieldparams.RootLength]byte]ethpb.AttSlashing{}
 
 	// Check each incoming attestation for double votes against other incoming attestations.
 	existingAttWrappers := make(map[attestationInfo]*slashertypes.IndexedAttestationWrapper)
 
+	// Iterate through each incoming attestation
 	for _, incomingAttWrapper := range incomingAttWrappers {
+		// Get the epoch this attestation is targeting
 		targetEpoch := incomingAttWrapper.IndexedAttestation.GetData().Target.Epoch
 
+		// Check each validator that signed this attestation
 		for _, validatorIndex := range incomingAttWrapper.IndexedAttestation.GetAttestingIndices() {
+
+			// Create key for this validator+epoch combination
 			info := attestationInfo{
 				validatorIndex: validatorIndex,
 				epoch:          targetEpoch,
 			}
 
+			// Check if we've seen an attestation from this validator for this epoch
 			existingAttWrapper, ok := existingAttWrappers[info]
 			if !ok {
 				// This is the first attestation for this `validator index x epoch` combination.
@@ -186,6 +231,7 @@ func (s *Service) checkDoubleVotes(
 				continue
 			}
 
+			// If both attestations have same data root, they're identical - not a double vote
 			if existingAttWrapper.DataRoot == incomingAttWrapper.DataRoot {
 				// Both attestations are the same, this is not a double vote.
 				continue
@@ -200,8 +246,10 @@ func (s *Service) checkDoubleVotes(
 			// Both attestations should have the same type. If not, we convert both to Electra attestations.
 			unifyAttWrapperVersion(existingAttWrapper, incomingAttWrapper)
 
+			// Check if attestations are post-Electra version
 			postElectra := existingAttWrapper.IndexedAttestation.Version() >= version.Electra
 			if postElectra {
+				// Handle post-Electra attestations
 				existing, ok := existingAttWrapper.IndexedAttestation.(*ethpb.IndexedAttestationElectra)
 				if !ok {
 					return nil, fmt.Errorf(
@@ -218,6 +266,7 @@ func (s *Service) checkDoubleVotes(
 						incomingAttWrapper.IndexedAttestation,
 					)
 				}
+				// Create Electra slashing evidence
 				slashing = &ethpb.AttesterSlashingElectra{
 					Attestation_1: existing,
 					Attestation_2: incoming,
@@ -231,6 +280,7 @@ func (s *Service) checkDoubleVotes(
 					}
 				}
 			} else {
+				// Handle pre-Electra attestations
 				existing, ok := existingAttWrapper.IndexedAttestation.(*ethpb.IndexedAttestation)
 				if !ok {
 					return nil, fmt.Errorf(
@@ -261,16 +311,18 @@ func (s *Service) checkDoubleVotes(
 				}
 			}
 
+			// Calculate root hash of slashing evidence
 			root, err := slashing.HashTreeRoot()
 			if err != nil {
 				return nil, errors.Wrap(err, "could not hash tree root for attester slashing")
 			}
 
+			// Store slashing evidence in results map
 			slashings[root] = slashing
 		}
 	}
 
-	// Check each incoming attestation for double votes against the database.
+	// Check for double votes against previously stored attestations in database
 	doubleVotes, err := s.serviceCfg.Database.CheckAttesterDoubleVotes(ctx, incomingAttWrappers)
 
 	if err != nil {
@@ -523,7 +575,7 @@ func (s *Service) firstEpochToUpdate(validatorIndex primitives.ValidatorIndex, c
 // Updates spans and detects any slashable attester offenses along the way.
 //  1. Determine the chunks we need to use for updating for the validator indices
 //     in a validator chunk index, then retrieve those chunks from the database.
-//  2. Using the chunks from step (1):
+//  2. Using the chunks from step (1):“
 //     for every attestation by chunk index:
 //     for each validator in the attestation's attesting indices:
 //     - Check if the attestation is slashable, if so return a slashing object.
@@ -562,6 +614,10 @@ func (s *Service) updateSpans(
 					continue
 				}
 
+				// Checks if an incoming attestation is slashable based on the validator chunk it
+				// corresponds to. If a slashable offense is found, we return it to the caller.
+				// If not, then update every single chunk the attestation covers, starting from its
+				// source epoch up to its target.
 				slashing, err := s.applyAttestationForValidator(
 					ctx, updatedChunks, attWrapper, kind, validatorChunkIndex, validatorIndex, currentEpoch,
 				)

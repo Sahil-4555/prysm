@@ -157,7 +157,7 @@ func (s *Store) CheckAttesterDoubleVotes(
 			err := s.db.View(func(tx *bolt.Tx) error {
 				signingRootsBkt := tx.Bucket(attestationDataRootsBucket)
 				attRecordsBkt := tx.Bucket(attestationRecordsBucket)
-
+				// Encodes an epoch into big-endian bytes.
 				encEpoch := encodeTargetEpoch(attToProcess.IndexedAttestation.GetData().Target.Epoch)
 				localDoubleVotes := make([]*slashertypes.AttesterDoubleVote, 0)
 
@@ -188,6 +188,8 @@ func (s *Store) CheckAttesterDoubleVotes(
 					}
 
 					// There is a double vote.
+					// Decode attestation record from bytes.
+					// The input encoded attestation record consists in the signing root concatenated with the compressed attestation record.
 					existingAttRecord, err := decodeAttestationRecord(encExistingAttRecord)
 					if err != nil {
 						return err

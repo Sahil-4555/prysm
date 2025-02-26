@@ -17,24 +17,37 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Group a list of attestations into batches by validator chunk index.
-// This way, we can detect on the batch of attestations for each validator chunk index
-// concurrently, and also allowing us to effectively use a single 2D chunk
-// for slashing detection through this logical grouping.
+// groupByValidatorChunkIndex organizes attestations into groups based on validator chunk indices.
+// This grouping enables:
+// 1. Concurrent processing of attestations for different validator chunks
+// 2. Efficient use of 2D chunks for slashing detection
 func (s *Service) groupByValidatorChunkIndex(
 	attestations []*slashertypes.IndexedAttestationWrapper,
 ) map[uint64][]*slashertypes.IndexedAttestationWrapper {
+	// Initialize map to store attestations grouped by validator chunk index
 	groupedAttestations := make(map[uint64][]*slashertypes.IndexedAttestationWrapper)
 
+	// The validatorChunkIndex groups validators into smaller sets for efficient block selection.
+	// default params set for ValidatorChunkIndex is 256.
+	// If there are 100,000 validators and they are split into 1,000 chunks, a validator with index
+	// 25,678 might be in chunk 25. This helps Ethereum process validator roles faster in PBS and MEV-Boost.
+
+	// Process each attestation
 	for _, attestation := range attestations {
+		// Track unique chunk indices for this attestation
+		// We use a map to avoid duplicate chunk indices
 		validatorChunkIndexes := make(map[uint64]bool)
 
+		// For each validator that signed this attestation
 		for _, validatorIndex := range attestation.IndexedAttestation.GetAttestingIndices() {
+			// Calculate which chunk this validator belongs to
 			validatorChunkIndex := s.params.validatorChunkIndex(primitives.ValidatorIndex(validatorIndex))
+			// Record this chunk index (map ensures uniqueness)
 			validatorChunkIndexes[validatorChunkIndex] = true
 		}
-
+		// Add this attestation to each relevant chunk group
 		for validatorChunkIndex := range validatorChunkIndexes {
+			// Append attestation to the list for this chunk index
 			groupedAttestations[validatorChunkIndex] = append(
 				groupedAttestations[validatorChunkIndex],
 				attestation,
@@ -46,6 +59,7 @@ func (s *Service) groupByValidatorChunkIndex(
 }
 
 // Group attestations by the chunk index their source epoch corresponds to.
+
 func (s *Service) groupByChunkIndex(
 	attestations []*slashertypes.IndexedAttestationWrapper,
 ) map[uint64][]*slashertypes.IndexedAttestationWrapper {
