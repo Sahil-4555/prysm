@@ -49,32 +49,12 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 		return
 	}
 
-<<<<<<< HEAD
-	// Avoid sending beacon node duplicated aggregation requests.
-	// - A unique key (k) is created using the slot and committee index.
-	// - This key represents the validator’s subscription to a specific subnet
-	// (a subset of the network) for the given slot and committee.
-	k := validatorSubnetSubscriptionKey(slot, duty.CommitteeIndex)
-	v.aggregatedSlotCommitteeIDCacheLock.Lock()
-	// checks if the key (k) already exists in the cache.
-	if v.aggregatedSlotCommitteeIDCache.Contains(k) {
-		// If the key exists, it means the validator has already sent an aggregation request
-		// for this slot and committee, so it skips the request and exits.
-		v.aggregatedSlotCommitteeIDCacheLock.Unlock()
-		return
-	}
-	// If the key does not exist in the cache, it adds the key to the cache.
-	// This ensures that future requests for the same slot and committee will be skipped.
-	v.aggregatedSlotCommitteeIDCache.Add(k, true)
-	v.aggregatedSlotCommitteeIDCacheLock.Unlock()
-
-=======
->>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 	var slotSig []byte
 	// v.distributed === true
 	// The validator is part of a distributed system, where the private keys used for signing
 	// are managed by an external Distributed Key Management System (DKMS). In this setup:
 	// - The validator does not have direct access to its private key.
+	
 	// - Instead, it requests signatures from the DKMS whenever it needs to sign data
 	// (e.g., attestations, blocks, or aggregation proofs).
 	// v.distributed === false
@@ -92,9 +72,6 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 			return
 		}
 	} else {
-<<<<<<< HEAD
-		// Signs input slot with domain selection proof. This is used to create the signature for aggregator selection.
-=======
 		// Avoid sending beacon node duplicated aggregation requests.
 		k := validatorSubnetSubscriptionKey(slot, duty.CommitteeIndex)
 		v.aggregatedSlotCommitteeIDCacheLock.Lock()
@@ -105,7 +82,6 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 		v.aggregatedSlotCommitteeIDCache.Add(k, true)
 		v.aggregatedSlotCommitteeIDCacheLock.Unlock()
 
->>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 		slotSig, err = v.signSlotWithSelectionProof(ctx, pubKey, slot)
 		if err != nil {
 			log.WithError(err).Error("Could not sign slot")
@@ -132,26 +108,14 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 	// TODO: look at renaming SubmitAggregateSelectionProof functions as they are GET beacon API
 	var agg ethpb.AggregateAttAndProof
 	if postElectra {
-<<<<<<< HEAD
-		// A validator acting as an aggregator submits a selection proof to receive an aggregated
-		// attestation for signing. (beacon-chain/rpc/prysm/v1alpha1/validator/aggregator.go)
-		res, err := v.validatorClient.SubmitAggregateSelectionProofElectra(ctx, aggSelectionRequest, duty.ValidatorIndex, uint64(len(duty.Committee)))
-=======
 		res, err := v.validatorClient.SubmitAggregateSelectionProofElectra(ctx, aggSelectionRequest, duty.ValidatorIndex, duty.CommitteeLength)
->>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 		if err != nil {
 			v.handleSubmitAggSelectionProofError(err, slot, fmtKey)
 			return
 		}
 		agg = res.AggregateAndProof
 	} else {
-<<<<<<< HEAD
-		// A validator acting as an aggregator submits a selection proof to receive an aggregated
-		// attestation for signing. (beacon-chain/rpc/prysm/v1alpha1/validator/aggregator.go)
-		res, err := v.validatorClient.SubmitAggregateSelectionProof(ctx, aggSelectionRequest, duty.ValidatorIndex, uint64(len(duty.Committee)))
-=======
 		res, err := v.validatorClient.SubmitAggregateSelectionProof(ctx, aggSelectionRequest, duty.ValidatorIndex, duty.CommitteeLength)
->>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 		if err != nil {
 			v.handleSubmitAggSelectionProofError(err, slot, fmtKey)
 			return
@@ -217,13 +181,7 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 		}
 	}
 
-<<<<<<< HEAD
-	// saveSubmittedAtt saves the submitted attestation data along with the attester's pubkey.
-	// The purpose of this is to display combined attesting logs for all keys managed by the validator client.
-	if err := v.saveSubmittedAtt(agg.AggregateVal().GetData(), pubKey[:], true); err != nil {
-=======
 	if err := v.saveSubmittedAtt(agg.AggregateVal(), pubKey[:], true); err != nil {
->>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 		log.WithError(err).Error("Could not add aggregator indices to logs")
 		if v.emitAccountMetrics {
 			ValidatorAggFailVec.WithLabelValues(fmtKey).Inc()

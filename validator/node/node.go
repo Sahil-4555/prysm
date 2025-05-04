@@ -67,20 +67,12 @@ func NewValidatorClient(cliCtx *cli.Context) (*ValidatorClient, error) {
 	// Set up distributed tracing for monitoring and debugging the validator client.
 	// Tracing helps track the performance and debug issues in the application.
 	if err := tracing.Setup(
-<<<<<<< HEAD
-		"validator", // Service name for tracing
-		cliCtx.String(cmd.TracingProcessNameFlag.Name), // Process name for tracing
-		cliCtx.String(cmd.TracingEndpointFlag.Name),    // Endpoint for sending trace data
-		cliCtx.Float64(cmd.TraceSampleFractionFlag.Name), // Fraction of traces to sample
-		cliCtx.Bool(cmd.EnableTracingFlag.Name),        // Whether tracing is enabled
-=======
 		cliCtx.Context,
 		"validator", // service name
 		cliCtx.String(cmd.TracingProcessNameFlag.Name),
 		cliCtx.String(cmd.TracingEndpointFlag.Name),
 		cliCtx.Float64(cmd.TraceSampleFractionFlag.Name),
 		cliCtx.Bool(cmd.EnableTracingFlag.Name),
->>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 	); err != nil {
 		return nil, err // Return error if tracing setup fails
 	}
@@ -98,29 +90,8 @@ func NewValidatorClient(cliCtx *cli.Context) (*ValidatorClient, error) {
 	// This ensures the user is aware of potential compatibility issues.
 	prereqs.WarnIfPlatformNotSupported(cliCtx.Context)
 
-<<<<<<< HEAD
-	// Create a new service registry to manage the lifecycle of services.
-	// The registry helps start, stop, and manage dependencies between services.
-	registry := runtime.NewServiceRegistry()
-
-	// Create a context and cancellation function for managing the lifecycle of the validator client.
-	// This allows for graceful shutdowns when needed.
-	ctx, cancel := context.WithCancel(cliCtx.Context)
-
-	// Initialize the ValidatorClient struct with the necessary fields.
-	validatorClient := &ValidatorClient{
-		cliCtx:                cliCtx,         // Store the CLI context
-		ctx:                   ctx,            // Store the context
-		cancel:                cancel,         // Store the cancellation function
-		services:              registry,       // Store the service registry
-		walletInitializedFeed: new(event.Feed), // Initialize an event feed for wallet initialization
-		stop:                  make(chan struct{}), // Create a channel for stopping the client
-	}
-
 	// Configure global validator settings based on the flags provided by the user.
 	// This sets up features and configurations required for the validator client.
-=======
->>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 	if err := features.ConfigureValidator(cliCtx); err != nil {
 		return nil, err // Return error if configuration fails
 	}
@@ -140,30 +111,6 @@ func NewValidatorClient(cliCtx *cli.Context) (*ValidatorClient, error) {
 		}
 	}
 
-<<<<<<< HEAD
-	// Initialize an HTTP router to handle API endpoints.
-	// This is used for communication with the validator client.
-	router := http.NewServeMux()
-
-	// Check if the user has enabled the web portal to manage the validator client.
-	// If enabled, initialize the client in a special way to support the web interface.
-	if cliCtx.IsSet(flags.EnableWebFlag.Name) {
-		// Warn if remote keymanager API is enabled, as it may not fully support web3signer.
-		if cliCtx.IsSet(flags.Web3SignerURLFlag.Name) || cliCtx.IsSet(flags.Web3SignerPublicValidatorKeysFlag.Name) {
-			log.Warn("Remote Keymanager API enabled. Prysm web does not properly support web3signer at this time")
-		}
-		log.Info("Enabling web portal to manage the validator client")
-		// Initialize the validator client for web-based management.
-		if err := validatorClient.initializeForWeb(cliCtx, router); err != nil {
-			return nil, err
-		}
-		return validatorClient, nil
-	}
-
-	// If the web portal is not enabled, initialize the validator client using the CLI configuration.
-	if err := validatorClient.initializeFromCLI(cliCtx, router); err != nil {
-		return nil, err 
-=======
 	w, err := getWallet(cliCtx)
 	if err != nil {
 		return nil, err
@@ -187,7 +134,6 @@ func NewValidatorClient(cliCtx *cli.Context) (*ValidatorClient, error) {
 
 	if err := validatorClient.registerServices(cliCtx); err != nil {
 		return nil, err
->>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 	}
 
 	// Return the fully configured and initialized validator client.

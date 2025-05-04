@@ -175,57 +175,18 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 			CommitteeId:   duty.CommitteeIndex,
 			Signature:     sig,
 		}
-<<<<<<< HEAD
-		// ProposeAttestationElectra is a function called by an attester to vote
-		// on a block via an attestation object as defined in the Ethereum specification.
-		// - It allows a validator to vote on a block by submitting an attestation
-		// beacon-chain/rpc/prysm/v1alpha1/validator/attester.go
-		attResp, err = v.validatorClient.ProposeAttestationElectra(ctx, attestation)
-	} else {
-		var indexInCommittee uint64
-		var found bool
-		// Find the Validator’s Index in the Committee
-		for i, vID := range duty.Committee {
-			if vID == duty.ValidatorIndex {
-				indexInCommittee = uint64(i)
-				found = true
-				break
-			}
-		}
-		// If the validator is not found in the committee, it logs an error, increments 
-		// a failure metric (if enabled), and stops.
-		if !found {
-			log.Errorf("Validator ID %d not found in committee of %v", duty.ValidatorIndex, duty.Committee)
-			if v.emitAccountMetrics {
-				ValidatorAttestFailVec.WithLabelValues(fmtKey).Inc()
-			}
-			return
-		}
-		// A bitfield (a list of bits) is created to represent which validators in the committee have signed the attestation.
-		aggregationBitfield = bitfield.NewBitlist(uint64(len(duty.Committee)))
-		// The bit corresponding to the validator’s index is set to true
-		aggregationBitfield.SetBitAt(indexInCommittee, true)
-		attestation := &ethpb.Attestation{
-=======
 		attestation = sa
 		attResp, err = v.validatorClient.ProposeAttestationElectra(ctx, sa)
 	} else {
 		aggregationBitfield = bitfield.NewBitlist(duty.CommitteeLength)
 		aggregationBitfield.SetBitAt(duty.ValidatorCommitteeIndex, true)
 		a := &ethpb.Attestation{
->>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 			Data:            data,
 			AggregationBits: aggregationBitfield,
 			Signature:       sig,
 		}
-<<<<<<< HEAD
-		// Finally, you submit your attestation to the beacon node. The beacon node broadcasts
-		// it to the network, and other validators include it in the blockchain.
-		attResp, err = v.validatorClient.ProposeAttestation(ctx, attestation)
-=======
 		attestation = a
 		attResp, err = v.validatorClient.ProposeAttestation(ctx, a)
->>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 	}
 	if err != nil {
 		log.WithError(err).Error("Could not submit attestation to beacon node")
@@ -235,14 +196,8 @@ func (v *validator) SubmitAttestation(ctx context.Context, slot primitives.Slot,
 		tracing.AnnotateError(span, err)
 		return
 	}
-<<<<<<< HEAD
-	// saveSubmittedAtt saves the submitted attestation data along with the attester's pubkey.
-	// The purpose of this is to display combined attesting logs for all keys managed by the validator client.
-	if err := v.saveSubmittedAtt(data, pubKey[:], false); err != nil {
-=======
 
 	if err := v.saveSubmittedAtt(attestation, pubKey[:], false); err != nil {
->>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 		log.WithError(err).Error("Could not save validator index for logging")
 		if v.emitAccountMetrics {
 			ValidatorAttestFailVec.WithLabelValues(fmtKey).Inc()
