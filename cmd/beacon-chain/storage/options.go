@@ -2,13 +2,14 @@ package storage
 
 import (
 	"path"
+	"strings"
 
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/db/filesystem"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/node"
+	"github.com/OffchainLabs/prysm/v6/cmd"
+	"github.com/OffchainLabs/prysm/v6/config/params"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/primitives"
 	"github.com/pkg/errors"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/db/filesystem"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/node"
-	"github.com/prysmaticlabs/prysm/v5/cmd"
-	"github.com/prysmaticlabs/prysm/v5/config/params"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/primitives"
 	"github.com/urfave/cli/v2"
 )
 
@@ -24,7 +25,29 @@ var (
 		Value:   uint64(params.BeaconConfig().MinEpochsForBlobsSidecarsRequest),
 		Aliases: []string{"extend-blob-retention-epoch"},
 	}
+	BlobStorageLayout = &cli.StringFlag{
+		Name:  "blob-storage-layout",
+		Usage: layoutFlagUsage(),
+		Value: filesystem.LayoutNameFlat,
+	}
 )
+
+func layoutOptions() string {
+	return "available options are: " + strings.Join(filesystem.LayoutNames, ", ") + "."
+}
+
+func layoutFlagUsage() string {
+	return "Dictates how to organize the blob directory structure on disk, " + layoutOptions()
+}
+
+func validateLayoutFlag(_ *cli.Context, v string) error {
+	for _, l := range filesystem.LayoutNames {
+		if v == l {
+			return nil
+		}
+	}
+	return errors.Errorf("invalid value '%s' for flag --%s, %s", v, BlobStorageLayout.Name, layoutOptions())
+}
 
 // BeaconNodeOptions sets configuration values on the node.BeaconNode value at node startup.
 // Note: we can't get the right context from cli.Context, because the beacon node setup code uses this context to
@@ -36,7 +59,9 @@ func BeaconNodeOptions(c *cli.Context) ([]node.Option, error) {
 		return nil, err
 	}
 	opts := []node.Option{node.WithBlobStorageOptions(
-		filesystem.WithBlobRetentionEpochs(e), filesystem.WithBasePath(blobStoragePath(c)),
+		filesystem.WithBlobRetentionEpochs(e),
+		filesystem.WithBasePath(blobStoragePath(c)),
+		filesystem.WithLayout(c.String(BlobStorageLayout.Name)), // This is validated in the Action func for BlobStorageLayout.
 	)}
 	return opts, nil
 }
@@ -68,4 +93,8 @@ func blobRetentionEpoch(cliCtx *cli.Context) (primitives.Epoch, error) {
 	}
 
 	return re, nil
+}
+
+func init() {
+	BlobStorageLayout.Action = validateLayoutFlag
 }

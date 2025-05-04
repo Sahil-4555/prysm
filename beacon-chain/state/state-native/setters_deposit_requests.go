@@ -1,8 +1,8 @@
 package state_native
 
 import (
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/state/state-native/types"
-	"github.com/prysmaticlabs/prysm/v5/runtime/version"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/state/state-native/types"
+	"github.com/OffchainLabs/prysm/v6/runtime/version"
 )
 
 // SetDepositRequestsStartIndex for the beacon state. Updates the DepositRequestsStartIndex
@@ -16,6 +16,5 @@ func (b *BeaconState) SetDepositRequestsStartIndex(index uint64) error {
 
 	b.depositRequestsStartIndex = index
 	b.markFieldAsDirty(types.DepositRequestsStartIndex)
-	b.rebuildTrie[types.DepositRequestsStartIndex] = true
 	return nil
 }

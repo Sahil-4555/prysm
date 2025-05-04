@@ -5,16 +5,16 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/core/blocks"
+	"github.com/OffchainLabs/prysm/v6/config/params"
+	consensus_types "github.com/OffchainLabs/prysm/v6/consensus-types"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/interfaces"
+	"github.com/OffchainLabs/prysm/v6/encoding/bytesutil"
+	ethpb "github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1"
+	"github.com/OffchainLabs/prysm/v6/runtime/version"
+	prysmTime "github.com/OffchainLabs/prysm/v6/time"
+	"github.com/OffchainLabs/prysm/v6/time/slots"
 	"github.com/pkg/errors"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/core/blocks"
-	"github.com/prysmaticlabs/prysm/v5/config/params"
-	consensus_types "github.com/prysmaticlabs/prysm/v5/consensus-types"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/interfaces"
-	"github.com/prysmaticlabs/prysm/v5/encoding/bytesutil"
-	ethpb "github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1"
-	"github.com/prysmaticlabs/prysm/v5/runtime/version"
-	prysmTime "github.com/prysmaticlabs/prysm/v5/time"
-	"github.com/prysmaticlabs/prysm/v5/time/slots"
 	"github.com/sirupsen/logrus"
 )
 
@@ -67,6 +67,22 @@ func logStateTransitionData(b interfaces.ReadOnlyBeaconBlock) error {
 			log.WithError(err).Error("Failed to get blob KZG commitments")
 		} else if len(kzgs) > 0 {
 			log = log.WithField("kzgCommitmentCount", len(kzgs))
+		}
+	}
+	if b.Version() >= version.Electra {
+		eReqs, err := b.Body().ExecutionRequests()
+		if err != nil {
+			log.WithError(err).Error("Failed to get execution requests")
+		} else {
+			if len(eReqs.Deposits) > 0 {
+				log = log.WithField("depositRequestCount", len(eReqs.Deposits))
+			}
+			if len(eReqs.Consolidations) > 0 {
+				log = log.WithField("consolidationRequestCount", len(eReqs.Consolidations))
+			}
+			if len(eReqs.Withdrawals) > 0 {
+				log = log.WithField("withdrawalRequestCount", len(eReqs.Withdrawals))
+			}
 		}
 	}
 	log.Info("Finished applying state transition")

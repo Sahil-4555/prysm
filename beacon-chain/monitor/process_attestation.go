@@ -4,17 +4,17 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/core/altair"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/core/helpers"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/state"
-	"github.com/prysmaticlabs/prysm/v5/config/params"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/interfaces"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/primitives"
-	"github.com/prysmaticlabs/prysm/v5/encoding/bytesutil"
-	ethpb "github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1"
-	"github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1/attestation"
-	"github.com/prysmaticlabs/prysm/v5/runtime/version"
-	"github.com/prysmaticlabs/prysm/v5/time/slots"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/core/altair"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/core/helpers"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/state"
+	"github.com/OffchainLabs/prysm/v6/config/params"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/interfaces"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/primitives"
+	"github.com/OffchainLabs/prysm/v6/encoding/bytesutil"
+	ethpb "github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1"
+	"github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1/attestation"
+	"github.com/OffchainLabs/prysm/v6/runtime/version"
+	"github.com/OffchainLabs/prysm/v6/time/slots"
 	"github.com/sirupsen/logrus"
 )
 
@@ -163,6 +163,23 @@ func (s *Service) processIncludedAttestation(ctx context.Context, state state.Be
 			s.aggregatedPerformance[primitives.ValidatorIndex(idx)] = aggregatedPerf
 			log.WithFields(logFields).Info("Attestation included")
 		}
+	}
+}
+
+// processSingleAttestation logs when the beacon node observes a single attestation from tracked validator.
+func (s *Service) processSingleAttestation(att ethpb.Att) {
+	s.RLock()
+	defer s.RUnlock()
+
+	single, ok := att.(*ethpb.SingleAttestation)
+	if !ok {
+		log.Errorf("Wrong attestation type (expected %T, got %T)", &ethpb.SingleAttestation{}, att)
+		return
+	}
+
+	if s.canUpdateAttestedValidator(single.AttesterIndex, single.GetData().Slot) {
+		logFields := logMessageTimelyFlagsForIndex(single.AttesterIndex, att.GetData())
+		log.WithFields(logFields).Info("Processed unaggregated attestation")
 	}
 }
 

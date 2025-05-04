@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/prysmaticlabs/prysm/v5/cmd/beacon-chain/flags"
+	"github.com/OffchainLabs/prysm/v6/cmd/beacon-chain/flags"
 	"github.com/sirupsen/logrus"
 )
 
@@ -17,7 +17,7 @@ func TestMain(m *testing.M) {
 	flags.Init(&flags.GlobalFlags{
 		BlockBatchLimit:            64,
 		BlockBatchLimitBurstFactor: 10,
-		BlobBatchLimit:             8,
+		BlobBatchLimit:             32,
 		BlobBatchLimitBurstFactor:  2,
 	})
 	defer func() {

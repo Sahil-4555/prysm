@@ -3,11 +3,11 @@ package state_native
 import (
 	"errors"
 
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/state/state-native/types"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/state/stateutil"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/primitives"
-	eth "github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1"
-	"github.com/prysmaticlabs/prysm/v5/runtime/version"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/state/state-native/types"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/state/stateutil"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/primitives"
+	eth "github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1"
+	"github.com/OffchainLabs/prysm/v6/runtime/version"
 )
 
 // SetNextWithdrawalIndex sets the index that will be assigned to the next withdrawal.
@@ -54,13 +54,17 @@ func (b *BeaconState) AppendPendingPartialWithdrawal(ppw *eth.PendingPartialWith
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
-	b.sharedFieldReferences[types.PendingPartialWithdrawals].MinusRef()
-	b.sharedFieldReferences[types.PendingPartialWithdrawals] = stateutil.NewRef(1)
+	pendingPartialWithdrawals := b.pendingPartialWithdrawals
+	if b.sharedFieldReferences[types.PendingPartialWithdrawals].Refs() > 1 {
+		pendingPartialWithdrawals = make([]*eth.PendingPartialWithdrawal, 0, len(b.pendingPartialWithdrawals)+1)
+		pendingPartialWithdrawals = append(pendingPartialWithdrawals, b.pendingPartialWithdrawals...)
+		b.sharedFieldReferences[types.PendingPartialWithdrawals].MinusRef()
+		b.sharedFieldReferences[types.PendingPartialWithdrawals] = stateutil.NewRef(1)
+	}
 
-	b.pendingPartialWithdrawals = append(b.pendingPartialWithdrawals, ppw)
-
+	b.pendingPartialWithdrawals = append(pendingPartialWithdrawals, ppw)
 	b.markFieldAsDirty(types.PendingPartialWithdrawals)
-	b.rebuildTrie[types.PendingPartialWithdrawals] = true
+
 	return nil
 }
 
@@ -81,8 +85,13 @@ func (b *BeaconState) DequeuePendingPartialWithdrawals(n uint64) error {
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
-	b.sharedFieldReferences[types.PendingPartialWithdrawals].MinusRef()
-	b.sharedFieldReferences[types.PendingPartialWithdrawals] = stateutil.NewRef(1)
+	if b.sharedFieldReferences[types.PendingPartialWithdrawals].Refs() > 1 {
+		pendingPartialWithdrawals := make([]*eth.PendingPartialWithdrawal, len(b.pendingPartialWithdrawals))
+		copy(pendingPartialWithdrawals, b.pendingPartialWithdrawals)
+		b.pendingPartialWithdrawals = pendingPartialWithdrawals
+		b.sharedFieldReferences[types.PendingPartialWithdrawals].MinusRef()
+		b.sharedFieldReferences[types.PendingPartialWithdrawals] = stateutil.NewRef(1)
+	}
 
 	b.pendingPartialWithdrawals = b.pendingPartialWithdrawals[n:]
 

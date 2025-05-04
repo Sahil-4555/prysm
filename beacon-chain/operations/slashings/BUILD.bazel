@@ -6,11 +6,11 @@ go_library(
         "doc.go",
         "log.go",
         "metrics.go",
+        "pool.go",
         "service.go",
-        "service_new.go",
         "types.go",
     ],
-    importpath = "github.com/prysmaticlabs/prysm/v5/beacon-chain/operations/slashings",
+    importpath = "github.com/OffchainLabs/prysm/v6/beacon-chain/operations/slashings",
     visibility = [
         "//beacon-chain:__subpackages__",
         "//testing/endtoend:__subpackages__",

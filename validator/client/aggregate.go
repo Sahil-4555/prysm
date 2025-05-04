@@ -6,20 +6,20 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/core/signing"
+	fieldparams "github.com/OffchainLabs/prysm/v6/config/fieldparams"
+	"github.com/OffchainLabs/prysm/v6/config/params"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/primitives"
+	"github.com/OffchainLabs/prysm/v6/crypto/bls"
+	"github.com/OffchainLabs/prysm/v6/monitoring/tracing"
+	"github.com/OffchainLabs/prysm/v6/monitoring/tracing/trace"
+	"github.com/OffchainLabs/prysm/v6/network/httputil"
+	ethpb "github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1"
+	validatorpb "github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1/validator-client"
+	"github.com/OffchainLabs/prysm/v6/runtime/version"
+	prysmTime "github.com/OffchainLabs/prysm/v6/time"
+	"github.com/OffchainLabs/prysm/v6/time/slots"
 	"github.com/pkg/errors"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/core/signing"
-	fieldparams "github.com/prysmaticlabs/prysm/v5/config/fieldparams"
-	"github.com/prysmaticlabs/prysm/v5/config/params"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/primitives"
-	"github.com/prysmaticlabs/prysm/v5/crypto/bls"
-	"github.com/prysmaticlabs/prysm/v5/monitoring/tracing"
-	"github.com/prysmaticlabs/prysm/v5/monitoring/tracing/trace"
-	"github.com/prysmaticlabs/prysm/v5/network/httputil"
-	ethpb "github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1"
-	validatorpb "github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1/validator-client"
-	"github.com/prysmaticlabs/prysm/v5/runtime/version"
-	prysmTime "github.com/prysmaticlabs/prysm/v5/time"
-	"github.com/prysmaticlabs/prysm/v5/time/slots"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -49,6 +49,7 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 		return
 	}
 
+<<<<<<< HEAD
 	// Avoid sending beacon node duplicated aggregation requests.
 	// - A unique key (k) is created using the slot and committee index.
 	// - This key represents the validator’s subscription to a specific subnet
@@ -67,6 +68,8 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 	v.aggregatedSlotCommitteeIDCache.Add(k, true)
 	v.aggregatedSlotCommitteeIDCacheLock.Unlock()
 
+=======
+>>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 	var slotSig []byte
 	// v.distributed === true
 	// The validator is part of a distributed system, where the private keys used for signing
@@ -89,7 +92,20 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 			return
 		}
 	} else {
+<<<<<<< HEAD
 		// Signs input slot with domain selection proof. This is used to create the signature for aggregator selection.
+=======
+		// Avoid sending beacon node duplicated aggregation requests.
+		k := validatorSubnetSubscriptionKey(slot, duty.CommitteeIndex)
+		v.aggregatedSlotCommitteeIDCacheLock.Lock()
+		if v.aggregatedSlotCommitteeIDCache.Contains(k) {
+			v.aggregatedSlotCommitteeIDCacheLock.Unlock()
+			return
+		}
+		v.aggregatedSlotCommitteeIDCache.Add(k, true)
+		v.aggregatedSlotCommitteeIDCacheLock.Unlock()
+
+>>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 		slotSig, err = v.signSlotWithSelectionProof(ctx, pubKey, slot)
 		if err != nil {
 			log.WithError(err).Error("Could not sign slot")
@@ -116,18 +132,26 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 	// TODO: look at renaming SubmitAggregateSelectionProof functions as they are GET beacon API
 	var agg ethpb.AggregateAttAndProof
 	if postElectra {
+<<<<<<< HEAD
 		// A validator acting as an aggregator submits a selection proof to receive an aggregated
 		// attestation for signing. (beacon-chain/rpc/prysm/v1alpha1/validator/aggregator.go)
 		res, err := v.validatorClient.SubmitAggregateSelectionProofElectra(ctx, aggSelectionRequest, duty.ValidatorIndex, uint64(len(duty.Committee)))
+=======
+		res, err := v.validatorClient.SubmitAggregateSelectionProofElectra(ctx, aggSelectionRequest, duty.ValidatorIndex, duty.CommitteeLength)
+>>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 		if err != nil {
 			v.handleSubmitAggSelectionProofError(err, slot, fmtKey)
 			return
 		}
 		agg = res.AggregateAndProof
 	} else {
+<<<<<<< HEAD
 		// A validator acting as an aggregator submits a selection proof to receive an aggregated
 		// attestation for signing. (beacon-chain/rpc/prysm/v1alpha1/validator/aggregator.go)
 		res, err := v.validatorClient.SubmitAggregateSelectionProof(ctx, aggSelectionRequest, duty.ValidatorIndex, uint64(len(duty.Committee)))
+=======
+		res, err := v.validatorClient.SubmitAggregateSelectionProof(ctx, aggSelectionRequest, duty.ValidatorIndex, duty.CommitteeLength)
+>>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 		if err != nil {
 			v.handleSubmitAggSelectionProofError(err, slot, fmtKey)
 			return
@@ -193,9 +217,13 @@ func (v *validator) SubmitAggregateAndProof(ctx context.Context, slot primitives
 		}
 	}
 
+<<<<<<< HEAD
 	// saveSubmittedAtt saves the submitted attestation data along with the attester's pubkey.
 	// The purpose of this is to display combined attesting logs for all keys managed by the validator client.
 	if err := v.saveSubmittedAtt(agg.AggregateVal().GetData(), pubKey[:], true); err != nil {
+=======
+	if err := v.saveSubmittedAtt(agg.AggregateVal(), pubKey[:], true); err != nil {
+>>>>>>> 204302a821da57632ec4e2d89126a21f00bd2817
 		log.WithError(err).Error("Could not add aggregator indices to logs")
 		if v.emitAccountMetrics {
 			ValidatorAggFailVec.WithLabelValues(fmtKey).Inc()

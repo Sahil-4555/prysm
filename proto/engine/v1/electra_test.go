@@ -3,11 +3,11 @@ package enginev1_test
 import (
 	"testing"
 
+	"github.com/OffchainLabs/prysm/v6/config/params"
+	"github.com/OffchainLabs/prysm/v6/encoding/bytesutil"
+	enginev1 "github.com/OffchainLabs/prysm/v6/proto/engine/v1"
+	"github.com/OffchainLabs/prysm/v6/testing/require"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/prysmaticlabs/prysm/v5/config/params"
-	"github.com/prysmaticlabs/prysm/v5/encoding/bytesutil"
-	enginev1 "github.com/prysmaticlabs/prysm/v5/proto/engine/v1"
-	"github.com/prysmaticlabs/prysm/v5/testing/require"
 )
 
 var depositRequestsSSZHex = "0x706b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000077630000000000000000000000000000000000000000000000000000000000007b00000000000000736967000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c801000000000000706b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000776300000000000000000000000000000000000000000000000000000000000090010000000000007369670000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000"
@@ -122,7 +122,7 @@ func TestGetDecodedExecutionRequests(t *testing.T) {
 			ExecutionRequests: [][]byte{append([]byte{uint8(enginev1.DepositRequestType)}, []byte{}...), append([]byte{uint8(enginev1.ConsolidationRequestType)}, consolidationRequestBytes...)},
 		}
 		_, err = ebe.GetDecodedExecutionRequests()
-		require.ErrorContains(t, "invalid deposit requests length", err)
+		require.ErrorContains(t, "invalid deposit requests SSZ size", err)
 	})
 	t.Run("If deposit requests are over the max allowed per payload then we should error", func(t *testing.T) {
 		requests := make([]*enginev1.DepositRequest, params.BeaconConfig().MaxDepositRequestsPerPayload+1)
@@ -143,7 +143,7 @@ func TestGetDecodedExecutionRequests(t *testing.T) {
 			},
 		}
 		_, err = ebe.GetDecodedExecutionRequests()
-		require.ErrorContains(t, "invalid deposit requests length, requests should not be more than the max per payload", err)
+		require.ErrorContains(t, "invalid deposit requests SSZ size, requests should not be more than the max per payload", err)
 	})
 	t.Run("If withdrawal requests are over the max allowed per payload then we should error", func(t *testing.T) {
 		requests := make([]*enginev1.WithdrawalRequest, params.BeaconConfig().MaxWithdrawalRequestsPerPayload+1)
@@ -162,7 +162,7 @@ func TestGetDecodedExecutionRequests(t *testing.T) {
 			},
 		}
 		_, err = ebe.GetDecodedExecutionRequests()
-		require.ErrorContains(t, "invalid withdrawal requests length, requests should not be more than the max per payload", err)
+		require.ErrorContains(t, "invalid withdrawal requests SSZ size, requests should not be more than the max per payload", err)
 	})
 	t.Run("If consolidation requests are over the max allowed per payload then we should error", func(t *testing.T) {
 		requests := make([]*enginev1.ConsolidationRequest, params.BeaconConfig().MaxConsolidationsRequestsPerPayload+1)
@@ -181,7 +181,7 @@ func TestGetDecodedExecutionRequests(t *testing.T) {
 			},
 		}
 		_, err = ebe.GetDecodedExecutionRequests()
-		require.ErrorContains(t, "invalid consolidation requests length, requests should not be more than the max per payload", err)
+		require.ErrorContains(t, "invalid consolidation requests SSZ size, requests should not be more than the max per payload", err)
 	})
 }
 

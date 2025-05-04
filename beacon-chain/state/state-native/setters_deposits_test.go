@@ -3,10 +3,10 @@ package state_native_test
 import (
 	"testing"
 
-	state_native "github.com/prysmaticlabs/prysm/v5/beacon-chain/state/state-native"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/primitives"
-	eth "github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1"
-	"github.com/prysmaticlabs/prysm/v5/testing/require"
+	state_native "github.com/OffchainLabs/prysm/v6/beacon-chain/state/state-native"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/primitives"
+	eth "github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1"
+	"github.com/OffchainLabs/prysm/v6/testing/require"
 )
 
 func TestAppendPendingDeposit(t *testing.T) {
@@ -33,6 +33,21 @@ func TestAppendPendingDeposit(t *testing.T) {
 	require.DeepEqual(t, creds, pbd[0].WithdrawalCredentials)
 	require.Equal(t, primitives.Slot(1), pbd[0].Slot)
 	require.DeepEqual(t, sig, pbd[0].Signature)
+
+	ds := make([]*eth.PendingDeposit, 0, 4)
+	require.NoError(t, s.SetPendingDeposits(ds))
+	require.NoError(t, s.AppendPendingDeposit(&eth.PendingDeposit{Amount: 1}))
+	s2 := s.Copy()
+	require.NoError(t, s2.AppendPendingDeposit(&eth.PendingDeposit{Amount: 3}))
+	require.NoError(t, s.AppendPendingDeposit(&eth.PendingDeposit{Amount: 2}))
+	d, err := s.PendingDeposits()
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), d[0].Amount)
+	require.Equal(t, uint64(2), d[1].Amount)
+	d, err = s2.PendingDeposits()
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), d[0].Amount)
+	require.Equal(t, uint64(3), d[1].Amount)
 
 	// Fails for versions older than electra
 	s, err = state_native.InitializeFromProtoDeneb(&eth.BeaconStateDeneb{})

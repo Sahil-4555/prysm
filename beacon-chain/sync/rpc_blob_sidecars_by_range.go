@@ -5,17 +5,17 @@ import (
 	"math"
 	"time"
 
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/p2p"
+	p2ptypes "github.com/OffchainLabs/prysm/v6/beacon-chain/p2p/types"
+	"github.com/OffchainLabs/prysm/v6/cmd/beacon-chain/flags"
+	"github.com/OffchainLabs/prysm/v6/config/params"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/primitives"
+	"github.com/OffchainLabs/prysm/v6/monitoring/tracing"
+	"github.com/OffchainLabs/prysm/v6/monitoring/tracing/trace"
+	pb "github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1"
+	"github.com/OffchainLabs/prysm/v6/time/slots"
 	libp2pcore "github.com/libp2p/go-libp2p/core"
 	"github.com/pkg/errors"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/p2p"
-	p2ptypes "github.com/prysmaticlabs/prysm/v5/beacon-chain/p2p/types"
-	"github.com/prysmaticlabs/prysm/v5/cmd/beacon-chain/flags"
-	"github.com/prysmaticlabs/prysm/v5/config/params"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/primitives"
-	"github.com/prysmaticlabs/prysm/v5/monitoring/tracing"
-	"github.com/prysmaticlabs/prysm/v5/monitoring/tracing/trace"
-	pb "github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1"
-	"github.com/prysmaticlabs/prysm/v5/time/slots"
 )
 
 func (s *Service) streamBlobBatch(ctx context.Context, batch blockBatch, wQuota uint64, stream libp2pcore.Stream) (uint64, error) {
@@ -27,14 +27,10 @@ func (s *Service) streamBlobBatch(ctx context.Context, batch blockBatch, wQuota 
 	defer span.End()
 	for _, b := range batch.canonical() {
 		root := b.Root()
-		idxs, err := s.cfg.blobStorage.Indices(b.Root(), b.Block().Slot())
-		if err != nil {
-			s.writeErrorResponseToStream(responseCodeServerError, p2ptypes.ErrGeneric.Error(), stream)
-			return wQuota, errors.Wrapf(err, "could not retrieve sidecars for block root %#x", root)
-		}
-		for i, l := uint64(0), uint64(len(idxs)); i < l; i++ {
+		idxs := s.cfg.blobStorage.Summary(root)
+		for i := range idxs.MaxBlobsForEpoch() {
 			// index not available, skip
-			if !idxs[i] {
+			if !idxs.HasIndex(i) {
 				continue
 			}
 			// We won't check for file not found since the .Indices method should normally prevent that from happening.
@@ -148,9 +144,14 @@ func BlobRPCMinValidSlot(current primitives.Slot) (primitives.Slot, error) {
 	return slots.EpochStart(minStart)
 }
 
+// This function is used to derive what is the ideal block batch size we can serve
+// blobs to the remote peer for. We compute the current limit which is the maximum
+// blobs to be served to the peer every period. And then using the maximum blobs per
+// block determine the block batch size satisfying this limit.
 func blobBatchLimit(slot primitives.Slot) uint64 {
 	maxBlobsPerBlock := params.BeaconConfig().MaxBlobsPerBlock(slot)
-	return uint64(flags.Get().BlockBatchLimit / maxBlobsPerBlock)
+	maxPossibleBlobs := flags.Get().BlobBatchLimit * flags.Get().BlobBatchLimitBurstFactor
+	return uint64(maxPossibleBlobs / maxBlobsPerBlock)
 }
 
 func validateBlobsByRange(r *pb.BlobSidecarsByRangeRequest, current primitives.Slot) (rangeParams, error) {

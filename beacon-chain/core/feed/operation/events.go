@@ -2,8 +2,9 @@
 package operation
 
 import (
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/blocks"
-	ethpb "github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/blocks"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/interfaces"
+	ethpb "github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1"
 )
 
 const (
@@ -35,6 +36,9 @@ const (
 
 	// SingleAttReceived is sent after a single attestation object is received from gossip or rpc
 	SingleAttReceived = 9
+
+	// BlockGossipReceived is sent after a block has been received from gossip or API that passes validation rules.
+	BlockGossipReceived = 10
 )
 
 // UnAggregatedAttReceivedData is the data sent with UnaggregatedAttReceived events.
@@ -84,4 +88,10 @@ type AttesterSlashingReceivedData struct {
 // SingleAttReceivedData is the data sent with SingleAttReceived events.
 type SingleAttReceivedData struct {
 	Attestation ethpb.Att
+}
+
+// BlockGossipReceivedData is the data sent with BlockGossipReceived events.
+type BlockGossipReceivedData struct {
+	// SignedBlock is the block that was received.
+	SignedBlock interfaces.ReadOnlySignedBeaconBlock
 }

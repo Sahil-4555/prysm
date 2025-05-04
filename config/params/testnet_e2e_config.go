@@ -7,7 +7,7 @@ const (
 	BellatrixE2EForkEpoch = 8
 	CapellaE2EForkEpoch   = 10
 	DenebE2EForkEpoch     = 12
-	ElectraE2EForkEpoch   = math.MaxUint64
+	ElectraE2EForkEpoch   = 14
 	FuluE2EForkEpoch      = math.MaxUint64
 )
 
@@ -65,7 +65,7 @@ func E2ETestConfig() *BeaconChainConfig {
 }
 
 func E2EMainnetTestConfig() *BeaconChainConfig {
-	e2eConfig := MainnetConfig().Copy()
+	e2eConfig := MainnetConfig()
 	e2eConfig.DepositContractAddress = "0x4242424242424242424242424242424242424242"
 	e2eConfig.Eth1FollowDistance = 8
 

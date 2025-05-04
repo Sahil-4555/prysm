@@ -3,11 +3,11 @@ package state_native
 import (
 	"errors"
 
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/state/state-native/types"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/state/stateutil"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/primitives"
-	ethpb "github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1"
-	"github.com/prysmaticlabs/prysm/v5/runtime/version"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/state/state-native/types"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/state/stateutil"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/primitives"
+	ethpb "github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1"
+	"github.com/OffchainLabs/prysm/v6/runtime/version"
 )
 
 // AppendPendingDeposit is a mutating call to the beacon state to create and append a pending
@@ -23,13 +23,17 @@ func (b *BeaconState) AppendPendingDeposit(pd *ethpb.PendingDeposit) error {
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
-	b.sharedFieldReferences[types.PendingDeposits].MinusRef()
-	b.sharedFieldReferences[types.PendingDeposits] = stateutil.NewRef(1)
+	pendingDeposits := b.pendingDeposits
+	if b.sharedFieldReferences[types.PendingDeposits].Refs() > 1 {
+		pendingDeposits = make([]*ethpb.PendingDeposit, 0, len(b.pendingDeposits)+1)
+		pendingDeposits = append(pendingDeposits, b.pendingDeposits...)
+		b.sharedFieldReferences[types.PendingDeposits].MinusRef()
+		b.sharedFieldReferences[types.PendingDeposits] = stateutil.NewRef(1)
+	}
 
-	b.pendingDeposits = append(b.pendingDeposits, pd)
-
+	b.pendingDeposits = append(pendingDeposits, pd)
 	b.markFieldAsDirty(types.PendingDeposits)
-	b.rebuildTrie[types.PendingDeposits] = true
+
 	return nil
 }
 
@@ -49,7 +53,6 @@ func (b *BeaconState) SetPendingDeposits(val []*ethpb.PendingDeposit) error {
 	b.pendingDeposits = val
 
 	b.markFieldAsDirty(types.PendingDeposits)
-	b.rebuildTrie[types.PendingDeposits] = true
 	return nil
 }
 
@@ -66,6 +69,5 @@ func (b *BeaconState) SetDepositBalanceToConsume(dbtc primitives.Gwei) error {
 	b.depositBalanceToConsume = dbtc
 
 	b.markFieldAsDirty(types.DepositBalanceToConsume)
-	b.rebuildTrie[types.DepositBalanceToConsume] = true
 	return nil
 }

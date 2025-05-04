@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OffchainLabs/prysm/v6/io/file"
 	"github.com/bazelbuild/rules_go/go/tools/bazel"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/prysmaticlabs/prysm/v5/io/file"
 )
 
 // params struct defines the parameters needed for running E2E tests to properly handle test sharding.
@@ -119,6 +119,9 @@ var StandardLighthouseNodeCount = 2
 
 // DepositCount is the number of deposits the E2E runner should make to evaluate post-genesis deposit processing.
 var DepositCount = uint64(64)
+
+// PostElectraDepositCount is the number of deposits the E2E runner should make to evaluate post-electra deposit processing.
+var PostElectraDepositCount = uint64(32)
 
 // PregenesisExecCreds is the number of withdrawal credentials of genesis validators which use an execution address.
 var PregenesisExecCreds = uint64(8)

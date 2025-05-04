@@ -7,21 +7,21 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/OffchainLabs/prysm/v6/api/server/structs"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/core/altair"
+	"github.com/OffchainLabs/prysm/v6/config/params"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/blocks"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/interfaces"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/primitives"
+	"github.com/OffchainLabs/prysm/v6/encoding/bytesutil"
+	"github.com/OffchainLabs/prysm/v6/network/httputil"
+	ethpb "github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1"
+	"github.com/OffchainLabs/prysm/v6/runtime/version"
+	e2eparams "github.com/OffchainLabs/prysm/v6/testing/endtoend/params"
+	"github.com/OffchainLabs/prysm/v6/testing/endtoend/policies"
+	"github.com/OffchainLabs/prysm/v6/testing/endtoend/types"
+	"github.com/OffchainLabs/prysm/v6/time/slots"
 	"github.com/pkg/errors"
-	"github.com/prysmaticlabs/prysm/v5/api/server/structs"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/core/altair"
-	"github.com/prysmaticlabs/prysm/v5/config/params"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/blocks"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/interfaces"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/primitives"
-	"github.com/prysmaticlabs/prysm/v5/encoding/bytesutil"
-	"github.com/prysmaticlabs/prysm/v5/network/httputil"
-	ethpb "github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1"
-	"github.com/prysmaticlabs/prysm/v5/runtime/version"
-	e2eparams "github.com/prysmaticlabs/prysm/v5/testing/endtoend/params"
-	"github.com/prysmaticlabs/prysm/v5/testing/endtoend/policies"
-	"github.com/prysmaticlabs/prysm/v5/testing/endtoend/types"
-	"github.com/prysmaticlabs/prysm/v5/time/slots"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -126,6 +126,12 @@ func validatorsParticipating(_ *types.EvaluationContext, conns ...*grpc.ClientCo
 	if e2eparams.TestParams.LighthouseBeaconNodeCount != 0 {
 		expected = float32(expectedMulticlientParticipation)
 	}
+	if participation.Epoch == params.BeaconConfig().ElectraForkEpoch {
+		// The first slot of Electra will be missed due to the switching of attestation types
+		// 5/6 slots =~0.83
+		// validator REST always is slightly reduced at ~0.82
+		expected = 0.82
+	}
 	if participation.Epoch > 0 && participation.Epoch.Sub(1) == params.BeaconConfig().BellatrixForkEpoch {
 		// Reduce Participation requirement to 95% to account for longer EE calls for
 		// the merge block. Target and head will likely be missed for a few validators at
@@ -168,6 +174,18 @@ func validatorsParticipating(_ *types.EvaluationContext, conns ...*grpc.ClientCo
 			respPrevEpochParticipation = st.PreviousEpochParticipation
 		case version.String(version.Capella):
 			st := &structs.BeaconStateCapella{}
+			if err = json.Unmarshal(resp.Data, st); err != nil {
+				return err
+			}
+			respPrevEpochParticipation = st.PreviousEpochParticipation
+		case version.String(version.Deneb):
+			st := &structs.BeaconStateDeneb{}
+			if err = json.Unmarshal(resp.Data, st); err != nil {
+				return err
+			}
+			respPrevEpochParticipation = st.PreviousEpochParticipation
+		case version.String(version.Electra):
+			st := &structs.BeaconStateElectra{}
 			if err = json.Unmarshal(resp.Data, st); err != nil {
 				return err
 			}
@@ -328,6 +346,12 @@ func syncCompatibleBlockFromCtr(container *ethpb.BeaconBlockContainer) (interfac
 	}
 	if container.GetBlindedDenebBlock() != nil {
 		return blocks.NewSignedBeaconBlock(container.GetBlindedDenebBlock())
+	}
+	if container.GetElectraBlock() != nil {
+		return blocks.NewSignedBeaconBlock(container.GetElectraBlock())
+	}
+	if container.GetBlindedElectraBlock() != nil {
+		return blocks.NewSignedBeaconBlock(container.GetBlindedElectraBlock())
 	}
 	return nil, errors.New("no supported block type in container")
 }

@@ -5,8 +5,8 @@ import (
 	"math/big"
 	"testing"
 
-	ethpb "github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1"
-	"github.com/prysmaticlabs/prysm/v5/testing/assert"
+	ethpb "github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1"
+	"github.com/OffchainLabs/prysm/v6/testing/assert"
 )
 
 var _ PendingDepositsFetcher = (*Cache)(nil)
@@ -43,68 +43,4 @@ func TestPendingDeposits_OK(t *testing.T) {
 
 	all := dc.PendingDeposits(context.Background(), nil)
 	assert.Equal(t, len(dc.pendingDeposits), len(all), "PendingDeposits(ctx, nil) did not return all deposits")
-}
-
-func TestPrunePendingDeposits_ZeroMerkleIndex(t *testing.T) {
-	dc := Cache{}
-
-	dc.pendingDeposits = []*ethpb.DepositContainer{
-		{Eth1BlockHeight: 2, Index: 2},
-		{Eth1BlockHeight: 4, Index: 4},
-		{Eth1BlockHeight: 6, Index: 6},
-		{Eth1BlockHeight: 8, Index: 8},
-		{Eth1BlockHeight: 10, Index: 10},
-		{Eth1BlockHeight: 12, Index: 12},
-	}
-
-	dc.PrunePendingDeposits(context.Background(), 0)
-	expected := []*ethpb.DepositContainer{
-		{Eth1BlockHeight: 2, Index: 2},
-		{Eth1BlockHeight: 4, Index: 4},
-		{Eth1BlockHeight: 6, Index: 6},
-		{Eth1BlockHeight: 8, Index: 8},
-		{Eth1BlockHeight: 10, Index: 10},
-		{Eth1BlockHeight: 12, Index: 12},
-	}
-	assert.DeepEqual(t, expected, dc.pendingDeposits)
-}
-
-func TestPrunePendingDeposits_OK(t *testing.T) {
-	dc := Cache{}
-
-	dc.pendingDeposits = []*ethpb.DepositContainer{
-		{Eth1BlockHeight: 2, Index: 2},
-		{Eth1BlockHeight: 4, Index: 4},
-		{Eth1BlockHeight: 6, Index: 6},
-		{Eth1BlockHeight: 8, Index: 8},
-		{Eth1BlockHeight: 10, Index: 10},
-		{Eth1BlockHeight: 12, Index: 12},
-	}
-
-	dc.PrunePendingDeposits(context.Background(), 6)
-	expected := []*ethpb.DepositContainer{
-		{Eth1BlockHeight: 6, Index: 6},
-		{Eth1BlockHeight: 8, Index: 8},
-		{Eth1BlockHeight: 10, Index: 10},
-		{Eth1BlockHeight: 12, Index: 12},
-	}
-
-	assert.DeepEqual(t, expected, dc.pendingDeposits)
-
-	dc.pendingDeposits = []*ethpb.DepositContainer{
-		{Eth1BlockHeight: 2, Index: 2},
-		{Eth1BlockHeight: 4, Index: 4},
-		{Eth1BlockHeight: 6, Index: 6},
-		{Eth1BlockHeight: 8, Index: 8},
-		{Eth1BlockHeight: 10, Index: 10},
-		{Eth1BlockHeight: 12, Index: 12},
-	}
-
-	dc.PrunePendingDeposits(context.Background(), 10)
-	expected = []*ethpb.DepositContainer{
-		{Eth1BlockHeight: 10, Index: 10},
-		{Eth1BlockHeight: 12, Index: 12},
-	}
-
-	assert.DeepEqual(t, expected, dc.pendingDeposits)
 }

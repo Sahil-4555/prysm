@@ -3,7 +3,7 @@ package params
 import (
 	"math"
 
-	"github.com/prysmaticlabs/prysm/v5/encoding/bytesutil"
+	"github.com/OffchainLabs/prysm/v6/encoding/bytesutil"
 )
 
 // MinimalSpecConfig retrieves the minimal config used in spec tests.
@@ -102,6 +102,10 @@ func MinimalSpecConfig() *BeaconChainConfig {
 	minimalConfig.InactivityScoreBias = 4
 	minimalConfig.EpochsPerSyncCommitteePeriod = 8
 	minimalConfig.MinEpochsForBlockRequests = 272
+
+	// New Deneb params
+	minimalConfig.MaxBlobCommitmentsPerBlock = 32
+	minimalConfig.KzgCommitmentInclusionProofDepth = 10
 
 	// New Electra params
 	minimalConfig.MinPerEpochChurnLimitElectra = 64000000000

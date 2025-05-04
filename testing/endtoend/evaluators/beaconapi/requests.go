@@ -2,12 +2,13 @@ package beaconapi
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
+	"github.com/OffchainLabs/prysm/v6/api/server/structs"
+	"github.com/OffchainLabs/prysm/v6/config/params"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/primitives"
 	"github.com/pkg/errors"
-	"github.com/prysmaticlabs/prysm/v5/api/server/structs"
-	"github.com/prysmaticlabs/prysm/v5/config/params"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/primitives"
 )
 
 var getRequests = map[string]endpoint{
@@ -80,8 +81,8 @@ var getRequests = map[string]endpoint{
 		withParams(func(_ primitives.Epoch) []string {
 			return []string{"head"}
 		})),
-	"/beacon/blocks/{param1}/attestations": newMetadata[structs.GetBlockAttestationsResponse](
-		v1PathTemplate,
+	"/beacon/blocks/{param1}/attestations": newMetadata[structs.GetBlockAttestationsV2Response](
+		v2PathTemplate,
 		withParams(func(_ primitives.Epoch) []string {
 			return []string{"head"}
 		})),
@@ -99,7 +100,7 @@ var getRequests = map[string]endpoint{
 			return []string{"head"}
 		})),
 	"/beacon/pool/attestations": newMetadata[structs.ListAttestationsResponse](
-		v1PathTemplate,
+		v2PathTemplate,
 		withSanityCheckOnly()),
 	"/beacon/pool/attester_slashings": newMetadata[structs.GetAttesterSlashingsResponse](
 		v1PathTemplate,
@@ -210,6 +211,12 @@ var getRequests = map[string]endpoint{
 				lhResp.Data = lhResp.Data[1:]
 			}
 			return compareJSON(pResp, lhResp)
+		})),
+	"/validator/blocks/{param1}?randao_reveal=0x1b66ac1fb663c9bc59509846d6ec05345bd908eda73e670af888da41af171505cc411d61252fb6cb3fa0017b679f8bb2305b26a285fa2737f175668d0dff91cc1b66ac1fb663c9bc59509846d6ec05345bd908eda73e670af888da41af171505": newMetadata[structs.ProduceBlockV3Response](
+		v3PathTemplate,
+		withSanityCheckOnly(),
+		withParams(func(currentEpoch primitives.Epoch) []string {
+			return []string{strconv.FormatUint(uint64(currentEpoch)*uint64(params.BeaconConfig().SlotsPerEpoch)+uint64(params.BeaconConfig().SlotsPerEpoch)/2+1, 10)}
 		})),
 }
 

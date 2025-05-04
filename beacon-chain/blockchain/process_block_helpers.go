@@ -7,26 +7,27 @@ import (
 	"strings"
 	"time"
 
-	lightclient "github.com/prysmaticlabs/prysm/v5/beacon-chain/core/light-client"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/core/helpers"
+	lightclient "github.com/OffchainLabs/prysm/v6/beacon-chain/core/light-client"
 
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/core/feed"
+	statefeed "github.com/OffchainLabs/prysm/v6/beacon-chain/core/feed/state"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/core/transition"
+	doublylinkedtree "github.com/OffchainLabs/prysm/v6/beacon-chain/forkchoice/doubly-linked-tree"
+	forkchoicetypes "github.com/OffchainLabs/prysm/v6/beacon-chain/forkchoice/types"
+	"github.com/OffchainLabs/prysm/v6/beacon-chain/state"
+	field_params "github.com/OffchainLabs/prysm/v6/config/fieldparams"
+	"github.com/OffchainLabs/prysm/v6/config/params"
+	consensus_blocks "github.com/OffchainLabs/prysm/v6/consensus-types/blocks"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/interfaces"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/primitives"
+	"github.com/OffchainLabs/prysm/v6/encoding/bytesutil"
+	mathutil "github.com/OffchainLabs/prysm/v6/math"
+	"github.com/OffchainLabs/prysm/v6/monitoring/tracing/trace"
+	ethpb "github.com/OffchainLabs/prysm/v6/proto/prysm/v1alpha1"
+	"github.com/OffchainLabs/prysm/v6/time/slots"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/pkg/errors"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/core/feed"
-	statefeed "github.com/prysmaticlabs/prysm/v5/beacon-chain/core/feed/state"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/core/transition"
-	doublylinkedtree "github.com/prysmaticlabs/prysm/v5/beacon-chain/forkchoice/doubly-linked-tree"
-	forkchoicetypes "github.com/prysmaticlabs/prysm/v5/beacon-chain/forkchoice/types"
-	"github.com/prysmaticlabs/prysm/v5/beacon-chain/state"
-	field_params "github.com/prysmaticlabs/prysm/v5/config/fieldparams"
-	"github.com/prysmaticlabs/prysm/v5/config/params"
-	consensus_blocks "github.com/prysmaticlabs/prysm/v5/consensus-types/blocks"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/interfaces"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/primitives"
-	"github.com/prysmaticlabs/prysm/v5/encoding/bytesutil"
-	mathutil "github.com/prysmaticlabs/prysm/v5/math"
-	"github.com/prysmaticlabs/prysm/v5/monitoring/tracing/trace"
-	ethpb "github.com/prysmaticlabs/prysm/v5/proto/prysm/v1alpha1"
-	"github.com/prysmaticlabs/prysm/v5/time/slots"
 	"github.com/sirupsen/logrus"
 )
 
@@ -102,15 +103,29 @@ func (s *Service) sendStateFeedOnBlock(cfg *postBlockProcessConfig) {
 		log.WithError(err).Debug("Could not check if block is optimistic")
 		optimistic = true
 	}
+	currEpoch := slots.ToEpoch(s.CurrentSlot())
+	currDependenRoot, err := s.cfg.ForkChoiceStore.DependentRoot(currEpoch)
+	if err != nil {
+		log.WithError(err).Debug("Could not get dependent root")
+	}
+	prevDependentRoot := [32]byte{}
+	if currEpoch > 0 {
+		prevDependentRoot, err = s.cfg.ForkChoiceStore.DependentRoot(currEpoch - 1)
+		if err != nil {
+			log.WithError(err).Debug("Could not get previous dependent root")
+		}
+	}
 	// Send notification of the processed block to the state feed.
 	s.cfg.StateNotifier.StateFeed().Send(&feed.Event{
 		Type: statefeed.BlockProcessed,
 		Data: &statefeed.BlockProcessedData{
-			Slot:        cfg.roblock.Block().Slot(),
-			BlockRoot:   cfg.roblock.Root(),
-			SignedBlock: cfg.roblock,
-			Verified:    true,
-			Optimistic:  optimistic,
+			Slot:              cfg.roblock.Block().Slot(),
+			BlockRoot:         cfg.roblock.Root(),
+			SignedBlock:       cfg.roblock,
+			CurrDependentRoot: currDependenRoot,
+			PrevDependentRoot: prevDependentRoot,
+			Verified:          true,
+			Optimistic:        optimistic,
 		},
 	})
 }
@@ -253,7 +268,7 @@ func (s *Service) processLightClientFinalityUpdate(
 		return errors.Wrapf(err, "could not get finalized block for root %#x", finalizedRoot)
 	}
 
-	update, err := lightclient.NewLightClientFinalityUpdateFromBeaconState(
+	newUpdate, err := lightclient.NewLightClientFinalityUpdateFromBeaconState(
 		ctx,
 		postState.Slot(),
 		postState,
@@ -267,9 +282,32 @@ func (s *Service) processLightClientFinalityUpdate(
 		return errors.Wrap(err, "could not create light client finality update")
 	}
 
+	lastUpdate := s.lcStore.LastFinalityUpdate()
+	if lastUpdate != nil {
+		// The finalized_header.beacon.lastUpdateSlot is greater than that of all previously forwarded finality_updates,
+		// or it matches the highest previously forwarded lastUpdateSlot and also has a sync_aggregate indicating supermajority (> 2/3)
+		// sync committee participation while the previously forwarded finality_update for that lastUpdateSlot did not indicate supermajority
+		newUpdateSlot := newUpdate.FinalizedHeader().Beacon().Slot
+		newHasSupermajority := lightclient.UpdateHasSupermajority(newUpdate.SyncAggregate())
+
+		lastUpdateSlot := lastUpdate.FinalizedHeader().Beacon().Slot
+		lastHasSupermajority := lightclient.UpdateHasSupermajority(lastUpdate.SyncAggregate())
+
+		if newUpdateSlot < lastUpdateSlot {
+			log.Debug("Skip saving light client finality newUpdate: Older than local newUpdate")
+			return nil
+		}
+		if newUpdateSlot == lastUpdateSlot && (lastHasSupermajority || !newHasSupermajority) {
+			log.Debug("Skip saving light client finality update: No supermajority advantage")
+			return nil
+		}
+	}
+	log.Debug("Saving new light client finality update")
+	s.lcStore.SetLastFinalityUpdate(newUpdate)
+
 	s.cfg.StateNotifier.StateFeed().Send(&feed.Event{
 		Type: statefeed.LightClientFinalityUpdate,
-		Data: update,
+		Data: newUpdate,
 	})
 	return nil
 }
@@ -286,7 +324,7 @@ func (s *Service) processLightClientOptimisticUpdate(ctx context.Context, signed
 		return errors.Wrapf(err, "could not get attested state for root %#x", attestedRoot)
 	}
 
-	update, err := lightclient.NewLightClientOptimisticUpdateFromBeaconState(
+	newUpdate, err := lightclient.NewLightClientOptimisticUpdateFromBeaconState(
 		ctx,
 		postState.Slot(),
 		postState,
@@ -303,9 +341,21 @@ func (s *Service) processLightClientOptimisticUpdate(ctx context.Context, signed
 		return errors.Wrap(err, "could not create light client optimistic update")
 	}
 
+	lastUpdate := s.lcStore.LastOptimisticUpdate()
+	if lastUpdate != nil {
+		// The attested_header.beacon.slot is greater than that of all previously forwarded optimistic updates
+		if newUpdate.AttestedHeader().Beacon().Slot <= lastUpdate.AttestedHeader().Beacon().Slot {
+			log.Debug("Skip saving light client optimistic update: Older than local update")
+			return nil
+		}
+	}
+
+	log.Debug("Saving new light client optimistic update")
+	s.lcStore.SetLastOptimisticUpdate(newUpdate)
+
 	s.cfg.StateNotifier.StateFeed().Send(&feed.Event{
 		Type: statefeed.LightClientOptimisticUpdate,
-		Data: update,
+		Data: newUpdate,
 	})
 
 	return nil
@@ -552,7 +602,8 @@ func (s *Service) fillInForkChoiceMissingBlocks(ctx context.Context, signed inte
 
 // inserts finalized deposits into our finalized deposit trie, needs to be
 // called in the background
-func (s *Service) insertFinalizedDeposits(ctx context.Context, fRoot [32]byte) {
+// Post-Electra: prunes all proofs and pending deposits in the cache
+func (s *Service) insertFinalizedDepositsAndPrune(ctx context.Context, fRoot [32]byte) {
 	ctx, span := trace.StartSpan(ctx, "blockChain.insertFinalizedDeposits")
 	defer span.End()
 	startTime := time.Now()
@@ -563,6 +614,16 @@ func (s *Service) insertFinalizedDeposits(ctx context.Context, fRoot [32]byte) {
 		log.WithError(err).Error("could not fetch finalized state")
 		return
 	}
+
+	// Check if we should prune all pending deposits.
+	// In post-Electra(after the legacy deposit mechanism is deprecated),
+	// we can prune all pending deposits in the deposit cache.
+	// See: https://eips.ethereum.org/EIPS/eip-6110#eth1data-poll-deprecation
+	if helpers.DepositRequestsStarted(finalizedState) {
+		s.pruneAllPendingDepositsAndProofs(ctx)
+		return
+	}
+
 	// We update the cache up to the last deposit index in the finalized block's state.
 	// We can be confident that these deposits will be included in some block
 	// because the Eth1 follow distance makes such long-range reorgs extremely unlikely.
@@ -589,6 +650,12 @@ func (s *Service) insertFinalizedDeposits(ctx context.Context, fRoot [32]byte) {
 	s.cfg.DepositCache.PrunePendingDeposits(ctx, int64(eth1DepositIndex)) // lint:ignore uintcast -- Deposit index should not exceed int64 in your lifetime.
 
 	log.WithField("duration", time.Since(startTime).String()).Debugf("Finalized deposit insertion completed at index %d", finalizedEth1DepIdx)
+}
+
+// pruneAllPendingDepositsAndProofs prunes all proofs and pending deposits in the cache.
+func (s *Service) pruneAllPendingDepositsAndProofs(ctx context.Context) {
+	s.cfg.DepositCache.PruneAllPendingDeposits(ctx)
+	s.cfg.DepositCache.PruneAllProofs(ctx)
 }
 
 // This ensures that the input root defaults to using genesis root instead of zero hashes. This is needed for handling

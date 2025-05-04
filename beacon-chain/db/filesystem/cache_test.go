@@ -3,9 +3,9 @@ package filesystem
 import (
 	"testing"
 
-	"github.com/prysmaticlabs/prysm/v5/config/params"
-	"github.com/prysmaticlabs/prysm/v5/encoding/bytesutil"
-	"github.com/prysmaticlabs/prysm/v5/testing/require"
+	"github.com/OffchainLabs/prysm/v6/config/params"
+	"github.com/OffchainLabs/prysm/v6/encoding/bytesutil"
+	"github.com/OffchainLabs/prysm/v6/testing/require"
 )
 
 func TestSlotByRoot_Summary(t *testing.T) {
@@ -53,7 +53,7 @@ func TestSlotByRoot_Summary(t *testing.T) {
 	for _, c := range cases {
 		if c.expected != nil {
 			key := bytesutil.ToBytes32([]byte(c.name))
-			sc.cache[key] = BlobStorageSummary{slot: 0, mask: c.expected}
+			sc.cache[key] = BlobStorageSummary{epoch: 0, mask: c.expected}
 		}
 	}
 	for _, c := range cases {

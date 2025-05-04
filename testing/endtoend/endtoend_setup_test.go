@@ -6,13 +6,13 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/prysmaticlabs/prysm/v5/config/params"
-	"github.com/prysmaticlabs/prysm/v5/consensus-types/primitives"
-	ev "github.com/prysmaticlabs/prysm/v5/testing/endtoend/evaluators"
-	"github.com/prysmaticlabs/prysm/v5/testing/endtoend/evaluators/beaconapi"
-	e2eParams "github.com/prysmaticlabs/prysm/v5/testing/endtoend/params"
-	"github.com/prysmaticlabs/prysm/v5/testing/endtoend/types"
-	"github.com/prysmaticlabs/prysm/v5/testing/require"
+	"github.com/OffchainLabs/prysm/v6/config/params"
+	"github.com/OffchainLabs/prysm/v6/consensus-types/primitives"
+	ev "github.com/OffchainLabs/prysm/v6/testing/endtoend/evaluators"
+	"github.com/OffchainLabs/prysm/v6/testing/endtoend/evaluators/beaconapi"
+	e2eParams "github.com/OffchainLabs/prysm/v6/testing/endtoend/params"
+	"github.com/OffchainLabs/prysm/v6/testing/endtoend/types"
+	"github.com/OffchainLabs/prysm/v6/testing/require"
 )
 
 func e2eMinimal(t *testing.T, cfg *params.BeaconChainConfig, cfgo ...types.E2EConfigOpt) *testRunner {
@@ -22,7 +22,7 @@ func e2eMinimal(t *testing.T, cfg *params.BeaconChainConfig, cfgo ...types.E2ECo
 
 	// Run for 12 epochs if not in long-running to confirm long-running has no issues.
 	var err error
-	epochsToRun := 14
+	epochsToRun := 16
 	epochStr, longRunning := os.LookupEnv("E2E_EPOCHS")
 	if longRunning {
 		epochsToRun, err = strconv.Atoi(epochStr)
@@ -64,6 +64,7 @@ func e2eMinimal(t *testing.T, cfg *params.BeaconChainConfig, cfgo ...types.E2ECo
 	evals = addIfForkSet(evals, cfg.BellatrixForkEpoch, ev.BellatrixForkTransition)
 	evals = addIfForkSet(evals, cfg.CapellaForkEpoch, ev.CapellaForkTransition)
 	evals = addIfForkSet(evals, cfg.DenebForkEpoch, ev.DenebForkTransition)
+	evals = addIfForkSet(evals, cfg.ElectraForkEpoch, ev.ElectraForkTransition)
 
 	testConfig := &types.E2EConfig{
 		BeaconFlags: []string{
@@ -104,7 +105,7 @@ func e2eMainnet(t *testing.T, usePrysmSh, useMultiClient bool, cfg *params.Beaco
 	}
 	// Run for 10 epochs if not in long-running to confirm long-running has no issues.
 	var err error
-	epochsToRun := 14
+	epochsToRun := 16
 	epochStr, longRunning := os.LookupEnv("E2E_EPOCHS")
 	if longRunning {
 		epochsToRun, err = strconv.Atoi(epochStr)
@@ -139,6 +140,7 @@ func e2eMainnet(t *testing.T, usePrysmSh, useMultiClient bool, cfg *params.Beaco
 	evals = addIfForkSet(evals, cfg.BellatrixForkEpoch, ev.BellatrixForkTransition)
 	evals = addIfForkSet(evals, cfg.CapellaForkEpoch, ev.CapellaForkTransition)
 	evals = addIfForkSet(evals, cfg.DenebForkEpoch, ev.DenebForkTransition)
+	evals = addIfForkSet(evals, cfg.ElectraForkEpoch, ev.ElectraForkTransition)
 
 	testConfig := &types.E2EConfig{
 		BeaconFlags: []string{
@@ -206,6 +208,7 @@ func scenarioEvals(cfg *params.BeaconChainConfig) []types.Evaluator {
 	evals = addIfForkSet(evals, cfg.BellatrixForkEpoch, ev.BellatrixForkTransition)
 	evals = addIfForkSet(evals, cfg.CapellaForkEpoch, ev.CapellaForkTransition)
 	evals = addIfForkSet(evals, cfg.DenebForkEpoch, ev.DenebForkTransition)
+	evals = addIfForkSet(evals, cfg.ElectraForkEpoch, ev.ElectraForkTransition)
 	return evals
 }
 
@@ -226,5 +229,6 @@ func scenarioEvalsMulti(cfg *params.BeaconChainConfig) []types.Evaluator {
 	evals = addIfForkSet(evals, cfg.BellatrixForkEpoch, ev.BellatrixForkTransition)
 	evals = addIfForkSet(evals, cfg.CapellaForkEpoch, ev.CapellaForkTransition)
 	evals = addIfForkSet(evals, cfg.DenebForkEpoch, ev.DenebForkTransition)
+	evals = addIfForkSet(evals, cfg.ElectraForkEpoch, ev.ElectraForkTransition)
 	return evals
 }
