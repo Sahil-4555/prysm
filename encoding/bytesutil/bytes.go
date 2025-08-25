@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"unsafe"
 
+	"github.com/OffchainLabs/prysm/v6/container/slice"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
@@ -141,9 +142,7 @@ func PadTo(b []byte, size int) []byte {
 func ReverseByteOrder(input []byte) []byte {
 	b := make([]byte, len(input))
 	copy(b, input)
-	for i := 0; i < len(b)/2; i++ {
-		b[i], b[len(b)-i-1] = b[len(b)-i-1], b[i]
-	}
+	slice.Reverse(b)
 	return b
 }
 
