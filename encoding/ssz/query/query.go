@@ -12,12 +12,14 @@ func CalculateOffsetAndLength(sszInfo *sszInfo, path []PathElement) (*sszInfo, u
 		return nil, 0, 0, errors.New("sszInfo is nil")
 	}
 
-	if len(path) == 0 {
+	pathLen := len(path)
+	if pathLen == 0 {
 		return nil, 0, 0, errors.New("path is empty")
 	}
 
 	walk := sszInfo
 	offset := uint64(0)
+	lastIndex := pathLen - 1
 
 	for pathIndex, elem := range path {
 		containerInfo, err := walk.ContainerInfo()
@@ -35,19 +37,20 @@ func CalculateOffsetAndLength(sszInfo *sszInfo, path []PathElement) (*sszInfo, u
 
 		// Check for accessing List/Vector elements by index
 		if elem.Index != nil {
+			index := *elem.Index
+			
 			switch walk.sszType {
 			case List:
-				index := *elem.Index
 				listInfo := walk.listInfo
 				if index >= listInfo.length {
 					return nil, 0, 0, fmt.Errorf("index %d out of bounds for field %s", index, elem.Name)
 				}
 
-				walk = listInfo.element
-				if walk.isVariable {
+				element := listInfo.element
+				if element.isVariable {
 					// Cumulative sum of sizes of previous elements to get the offset.
-					for i := range index {
-						offset += listInfo.elementSizes[i]
+					for _, size := range listInfo.elementSizes[:index] {
+						offset += size
 					}
 
 					// NOTE: When populating recursively, the shared element template is updated for each
@@ -56,22 +59,24 @@ func CalculateOffsetAndLength(sszInfo *sszInfo, path []PathElement) (*sszInfo, u
 					// to the next field's sszInfo, which would have the correct size information.
 					// However, if this is the last element in the path, we need to ensure we return the correct size
 					// for the indexed element. Hence, we return the size from elementSizes.
-					if pathIndex == len(path)-1 {
-						return walk, offset, listInfo.elementSizes[index], nil
+					if pathIndex == lastIndex {
+						return element, offset,  listInfo.elementSizes[index], nil
 					}
+					walk = element
 				} else {
 					offset += index * listInfo.element.Size()
+					walk = element
 				}
 
 			case Vector:
-				index := *elem.Index
 				vectorInfo := walk.vectorInfo
 				if index >= vectorInfo.length {
 					return nil, 0, 0, fmt.Errorf("index %d out of bounds for field %s", index, elem.Name)
 				}
 
-				offset += index * vectorInfo.element.Size()
-				walk = vectorInfo.element
+				element := vectorInfo.element
+				offset += index * element.Size()
+				walk = element
 
 			default:
 				return nil, 0, 0, fmt.Errorf("field %s type %s cannot apply index", elem.Name, walk.sszType)
