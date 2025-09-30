@@ -16,7 +16,7 @@ type PathElement struct {
 
 func ParsePath(rawPath string) ([]PathElement, error) {
 	if rawPath == "" {
-		return nil, errors.New("empty path provided")
+		return []PathElement{},	 nil
 	}
 
 	// Trim leading dot if present
