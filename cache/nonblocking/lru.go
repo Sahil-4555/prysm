@@ -27,17 +27,16 @@ func NewLRU[K comparable, V any](size int, onEvict EvictCallback[K, V]) (*LRU[K,
 		return nil, errors.New("must provide a positive size")
 	}
 	// Initialize the channel buffer size as being 10% of the cache size.
-	chanSize := size / 10
+	chanSize := max(size/10, 1)
 
 	c := &LRU[K, V]{
 		size:      size,
 		evictList: newList[K, V](),
-		items:     make(map[K]*entry[K, V]),
+		items:     make(map[K]*entry[K, V], size),
 		onEvict:   onEvict,
 		getChan:   make(chan *entry[K, V], chanSize),
 	}
-	// Spin off separate go-routine to handle evict list
-	// operations.
+	// Spin off separate go-routine to handle evict list operations.
 	go c.handleGetRequests()
 	return c, nil
 }
@@ -46,77 +45,87 @@ func NewLRU[K comparable, V any](size int, onEvict EvictCallback[K, V]) (*LRU[K,
 func (c *LRU[K, V]) Add(key K, value V) (evicted bool) {
 	// Check for existing item
 	c.itemsLock.RLock()
-	if ent, ok := c.items[key]; ok {
-		c.itemsLock.RUnlock()
+	ent, ok := c.items[key]
+	c.itemsLock.RUnlock()
 
+	if ok {
+		// Move it to front and update value
 		c.evictListLock.Lock()
 		c.evictList.moveToFront(ent)
 		c.evictListLock.Unlock()
 		ent.value = value
 		return false
 	}
-	c.itemsLock.RUnlock()
 
 	// Add new item
 	c.evictListLock.Lock()
-	ent := c.evictList.pushFront(key, value)
+	newEnt := c.evictList.pushFront(key, value)
+	needEvict := c.evictList.length() > c.size
 	c.evictListLock.Unlock()
 
 	c.itemsLock.Lock()
-	c.items[key] = ent
+	c.items[key] = newEnt
 	c.itemsLock.Unlock()
 
-	c.evictListLock.RLock()
-	evict := c.evictList.length() > c.size
-	c.evictListLock.RUnlock()
-
-	// Verify size not exceeded
-	if evict {
+	// If eviction needed, remove oldest (handles list+map+callback)
+	if needEvict {
 		c.removeOldest()
+		return true
 	}
-	return evict
+	return false
 }
 
 // Get looks up a key's value from the cache.
 func (c *LRU[K, V]) Get(key K) (value V, ok bool) {
 	c.itemsLock.RLock()
-	if ent, ok := c.items[key]; ok {
-		c.itemsLock.RUnlock()
-
-		// Make this get function non-blocking for multiple readers.
-		c.getChan <- ent
-		return ent.value, true
-	}
+	ent, ok := c.items[key]
 	c.itemsLock.RUnlock()
-	return
+	if !ok {
+		var zero V
+		return zero, false
+	}
+
+	// Non-blocking notify to move element to front.
+	// If channel is full, skip the notification (the element will still be present;
+	// recency might not be updated immediately).
+	select {
+	case c.getChan <- ent:
+	default:
+	}
+	return ent.value, true
 }
 
 // Len returns the number of items in the cache.
 func (c *LRU[K, V]) Len() int {
 	c.evictListLock.RLock()
-	defer c.evictListLock.RUnlock()
-	return c.evictList.length()
+	l := c.evictList.length()
+	c.evictListLock.RUnlock()
+	return l
 }
 
 // Resize changes the cache size.
+// Returns the number of evicted elements.
 func (c *LRU[K, V]) Resize(size int) (evicted int) {
-	diff := max(c.Len()-size, 0)
-	for range diff {
+	if size < 0 {
+		return 0
+	}
+
+	for c.Len() > size {
 		c.removeOldest()
+		evicted++
 	}
 	c.size = size
-	return diff
+	return evicted
 }
 
 // removeOldest removes the oldest item from the cache.
 func (c *LRU[K, V]) removeOldest() {
 	c.evictListLock.RLock()
-	if ent := c.evictList.back(); ent != nil {
-		c.evictListLock.RUnlock()
-		c.removeElement(ent)
-		return
-	}
+	ent := c.evictList.back()
 	c.evictListLock.RUnlock()
+	if ent != nil {
+		c.removeElement(ent)
+	}
 }
 
 // removeElement is used to remove a given list element from the cache
@@ -134,10 +143,11 @@ func (c *LRU[K, V]) removeElement(e *entry[K, V]) {
 }
 
 func (c *LRU[K, V]) handleGetRequests() {
-	for {
-		entry := <-c.getChan
+	for ent := range c.getChan {
+		// Move the node to front; if the entry is already removed from the list,
+		// moveToFront should be a no-op or safe (depends on implementation).
 		c.evictListLock.Lock()
-		c.evictList.moveToFront(entry)
+		c.evictList.moveToFront(ent)
 		c.evictListLock.Unlock()
 	}
 }
