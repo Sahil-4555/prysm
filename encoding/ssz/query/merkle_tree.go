@@ -17,10 +17,19 @@ func (info *SszInfo) MerkleTree() (*ssz.Node, error) {
 	}
 
 	// info.source is guaranteed to be valid and dereferenced by AnalyzeObject
-	v := reflect.ValueOf(info.source).Elem()
-	w := &ssz.Wrapper{}
+	v := reflect.ValueOf(info.source)
+	// Ensure source is a pointer; calling Elem() on a non-pointer panics.
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return nil, fmt.Errorf("source must be a non-nil pointer")
+	}
 
-	if err := buildTree(info, v, w); err != nil {
+	w := &ssz.Wrapper{}
+	// Ensure the pointer refers to a valid value; Elem() can return Invalid for nil elements.
+	if v.Elem().Kind() == reflect.Invalid {
+		return nil, fmt.Errorf("source pointer points to nil element")
+	}
+
+	if err := buildTree(info, v.Elem(), w); err != nil {
 		return nil, err
 	}
 
@@ -30,6 +39,9 @@ func (info *SszInfo) MerkleTree() (*ssz.Node, error) {
 // buildTree recursively merkleizes a value according to SSZ rules.
 // It dispatches to type-specific handlers based on the SSZ type
 func buildTree(info *SszInfo, v reflect.Value, w *ssz.Wrapper) error {
+	// Centralized pointer handling
+	v = dereferencePointer(v)
+
 	if info.sszType.isBasic() {
 		return addLeafFromBasicType(info.sszType, v, w)
 	}
@@ -87,6 +99,9 @@ func buildContainerSubtree(info *SszInfo, v reflect.Value, w *ssz.Wrapper) error
 	for _, name := range ci.order {
 		fieldInfo := ci.fields[name]
 		fieldVal := v.FieldByName(fieldInfo.goFieldName)
+		if !fieldVal.IsValid() {
+			return fmt.Errorf("field %s not found in container", fieldInfo.goFieldName)
+		}
 		if err := buildTree(fieldInfo.sszInfo, fieldVal, w); err != nil {
 			return fmt.Errorf("field %s: %w", name, err)
 		}
@@ -108,22 +123,27 @@ func buildVectorSubtree(info *SszInfo, v reflect.Value, w *ssz.Wrapper) error {
 		return err
 	}
 
-	start := w.Indx()
 	length := v.Len()
+	if length != int(vi.length) {
+		return fmt.Errorf("vector length mismatch: expected %d, got %d", vi.length, length)
+	}
+
+	start := w.Indx()
+	numLeaves := length
 
 	if vi.element.sszType.isBasic() {
 		// Vectors of basic types are packed into 32-byte chunks
-		length = packBasicElements(vi.element, v, w, length)
+		numLeaves = packBasicElements(vi.element, v, w, length)
 	} else {
 		// General case: vector of composite elements (each element becomes its own subtree)
-		for i := 0; i < length; i++ {
+		for i := range length {
 			if err := buildTree(vi.element, v.Index(i), w); err != nil {
 				return fmt.Errorf("vector index %d: %w", i, err)
 			}
 		}
 	}
 
-	addPadding(w, length)
+	addPadding(w, numLeaves)
 	w.Commit(start)
 	return nil
 }
@@ -146,17 +166,21 @@ func buildListSubtree(info *SszInfo, v reflect.Value, w *ssz.Wrapper) error {
 		// Lists of basic types are packed into 32-byte chunks
 		packBasicElements(elemInfo, v, w, length)
 
-		limit = ssz.CalculateLimit(limit, uint64(length), uint64(itemLength(elemInfo)))
+		// Calculate the max number of LEAVES for the list limit
+		elemSize := uint64(itemLength(elemInfo))
+		maxLeaves := (limit*elemSize + 31) / 32
+
+		w.CommitWithMixin(start, length, int(nextPowerOfTwo(maxLeaves)))
 	} else {
 		// General case: list of composite elements
-		for i := 0; i < length; i++ {
+		for i := range length {
 			if err := buildTree(elemInfo, v.Index(i), w); err != nil {
 				return fmt.Errorf("list index %d: %w", i, err)
 			}
 		}
-	}
 
-	w.CommitWithMixin(start, length, int(nextPowerOfTwo(uint64(limit))))
+		w.CommitWithMixin(start, length, int(nextPowerOfTwo(uint64(limit))))
+	}
 	return nil
 }
 
@@ -183,10 +207,7 @@ func buildBitlistSubtree(info *SszInfo, v reflect.Value, w *ssz.Wrapper) error {
 
 	// Add bytes in 32-byte chunks
 	for i := 0; i < len(data); i += 32 {
-		end := i + 32
-		if end > len(data) {
-			end = len(data)
-		}
+		end := min(i+32, len(data))
 		w.AddBytes(data[i:end])
 	}
 
@@ -215,17 +236,13 @@ func buildBitvectorSubtree(info *SszInfo, v reflect.Value, w *ssz.Wrapper) error
 	}
 
 	start := w.Indx()
-	// Add bytes in 32-byte chunks
-	length := bv.Length()
-	numChunks := int(length / 32)
+
 	for i := 0; i < len(bitvectorBytes); i += 32 {
-		end := i + 32
-		if end > len(bitvectorBytes) {
-			end = len(bitvectorBytes)
-		}
-		chunk := bitvectorBytes[i:end]
-		w.AddBytes(chunk)
+		end := min(i+32, len(bitvectorBytes))
+		w.AddBytes(bitvectorBytes[i:end])
 	}
+
+	numChunks := int((bv.Length() + 255) / 256)
 	addPadding(w, numChunks) // fixed-size, no mixin
 	w.Commit(start)
 
@@ -243,20 +260,22 @@ func packBasicElements(elemInfo *SszInfo, v reflect.Value, w *ssz.Wrapper, lengt
 	elemsPerChunk := 32 / elemSize
 	numChunks := (length + elemsPerChunk - 1) / elemsPerChunk
 
-	for chunkIdx := 0; chunkIdx < numChunks; chunkIdx++ {
+	for chunkIdx := range numChunks {
 		chunk := make([]byte, 32)
-		for i := 0; i < elemsPerChunk; i++ {
-			elemIdx := chunkIdx*elemsPerChunk + i
+		base := chunkIdx * elemsPerChunk
+		for i := range elemsPerChunk {
+			elemIdx := base + i
 			if elemIdx >= length {
 				break
 			}
 			offset := i * elemSize
+			elem := v.Index(elemIdx)
 			if elemInfo.sszType == Boolean {
-				if v.Index(elemIdx).Bool() {
+				if elem.Bool() {
 					chunk[offset] = 1
 				}
 			} else {
-				putLittleEndian(chunk[offset:], v.Index(elemIdx).Uint(), elemSize)
+				putLittleEndian(chunk[offset:], elem.Uint(), elemSize)
 			}
 		}
 		w.AddBytes(chunk)
@@ -268,6 +287,14 @@ func packBasicElements(elemInfo *SszInfo, v reflect.Value, w *ssz.Wrapper, lengt
 // addPadding adds empty nodes to reach the next power of 2,
 // ensuring proper binary tree structure for SSZ merkleization.
 func addPadding(w *ssz.Wrapper, count int) {
+	// If `count` is already a power of two (or 0/1), no padding is needed.
+	// SSZ merkleization requires container sizes to be padded only up to the
+	// *next* power of two. When count is already a power of two, the tree
+	// shape is already correct, so we can return early and avoid extra work.
+	if count <= 1 || count&(count-1) == 0 {
+		return
+	}
+
 	paddedLength := int(nextPowerOfTwo(uint64(count)))
 	for i := count; i < paddedLength; i++ {
 		w.AddEmpty()
@@ -277,7 +304,7 @@ func addPadding(w *ssz.Wrapper, count int) {
 // putLittleEndian writes an unsigned integer value in little-endian format.
 // Supports sizes 1, 2, 4, or 8 bytes for uint8/16/32/64 respectively.
 func putLittleEndian(dst []byte, val uint64, size int) {
-	for i := 0; i < size; i++ {
+	for i := range size {
 		dst[i] = byte(val >> (8 * i))
 	}
 }
